@@ -378,66 +378,69 @@ async def get_top_picks(
     analyzed_count = 0
     failed_count = 0
     
+    # Sort by confidence (descending)
+    buy_picks.sort(key=lambda x: x["confidence"], reverse=True)
+    sell_picks.sort(key=lambda x: x["confidence"], reverse=True)
+    
+    return {
+        "generated_at": __import__("datetime").datetime.now().isoformat(),
+        "market_status": "Open" if 9 <= __import__("datetime").datetime.now().hour < 16 else "Closed",
+        "buy_recommendations": buy_picks[:limit],
+        "sell_recommendations": sell_picks[:limit],
+        "total_analyzed": analyzed_count,
+        "total_attempted": len(stocks_to_analyze),
+        "failed": failed_count,
+        "disclaimer": "⚠️ This is AI-generated analysis for educational purposes only. Not financial advice."
+    }
+
+    # ... in get_top_picks ...
+    
     # Use full stock universe (up to max_stocks)
     stocks_to_analyze = ALL_STOCKS[:max_stocks]
     
-    async def analyze_quick(symbol: str):
-        """Quick analysis for ranking."""
-        try:
-            tech_data = await technical_analyzer.analyze(symbol)
-            if not tech_data or not tech_data.get("current_price"):
-                return None
-            
-            rsi = tech_data.get("rsi", 50)
-            price_above_ema = tech_data.get("price_above_ema", False)
-            tech_score = tech_data.get("technical_score", 50)
-            
-            # Scoring logic
-            if rsi < 35 and tech_score > 60:
-                signal = "BUY"
-                confidence = min(85, 50 + (35 - rsi) + tech_score / 5)
-            elif rsi > 65 and tech_score < 40:
-                signal = "SELL"
-                confidence = min(85, 50 + (rsi - 65) + (100 - tech_score) / 5)
-            elif price_above_ema and tech_score > 70:
-                signal = "BUY"
-                confidence = 55 + tech_score / 10
-            elif not price_above_ema and tech_score < 35:
-                signal = "SELL"
-                confidence = 55 + (100 - tech_score) / 10
-            else:
-                signal = "HOLD"
-                confidence = 50
-            
-            return {
-                "symbol": symbol,
-                "signal": signal,
-                "confidence": round(confidence, 1),
-                "current_price": tech_data.get("current_price"),
-                "rsi": round(rsi, 1) if rsi else None,
-                "change_pct": round(tech_data.get("change_pct", 0), 2),
-                "data_source": tech_data.get("data_source", "unknown")
-            }
-        except Exception as e:
-            return None
+    # Use bulk scanning for speed
+    results_map = await technical_analyzer.scan_batched(stocks_to_analyze)
     
-    # Analyze stocks in parallel (batches of 20 for speed)
-    batch_size = 20
-    for i in range(0, len(stocks_to_analyze), batch_size):
-        batch = stocks_to_analyze[i:i+batch_size]
-        tasks = [analyze_quick(s) for s in batch]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+    analyzed_count = len(results_map)
+    failed_count = len(stocks_to_analyze) - analyzed_count
+    
+    for symbol, data in results_map.items():
+        tech_score = data.get("technical_score", 50)
+        rsi = data.get("rsi")
+        price_above_ema = data.get("price_above_ema", False)
         
-        for result in results:
-            if result and not isinstance(result, Exception):
-                analyzed_count += 1
-                if result["signal"] == "BUY":
-                    buy_picks.append(result)
-                elif result["signal"] == "SELL":
-                    sell_picks.append(result)
-            else:
-                failed_count += 1
-    
+        # Scoring logic
+        if rsi and rsi < 35 and tech_score > 60:
+            signal = "BUY"
+            confidence = min(85, 50 + (35 - rsi) + tech_score / 5)
+        elif rsi and rsi > 65 and tech_score < 40:
+            signal = "SELL"
+            confidence = min(85, 50 + (rsi - 65) + (100 - tech_score) / 5)
+        elif price_above_ema and tech_score > 70:
+            signal = "BUY"
+            confidence = 55 + tech_score / 10
+        elif not price_above_ema and tech_score < 35:
+            signal = "SELL"
+            confidence = 55 + (100 - tech_score) / 10
+        else:
+            signal = "HOLD"
+            confidence = 50
+        
+        result = {
+            "symbol": symbol,
+            "signal": signal,
+            "confidence": round(confidence, 1),
+            "current_price": data.get("current_price"),
+            "rsi": rsi,
+            "change_pct": data.get("change_pct", 0),
+            "data_source": "yfinance_bulk"
+        }
+
+        if signal == "BUY":
+            buy_picks.append(result)
+        elif signal == "SELL":
+            sell_picks.append(result)
+
     # Sort by confidence (descending)
     buy_picks.sort(key=lambda x: x["confidence"], reverse=True)
     sell_picks.sort(key=lambda x: x["confidence"], reverse=True)
@@ -651,4 +654,84 @@ async def get_premarket_status():
             "sell_signals": cached.get("all_sell_signals") if cached else 0,
             "generated_at": cached.get("generated_at") if cached else None
         } if cached else None
+    }
+
+
+@router.get("/model/validate")
+async def validate_predictions(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Trigger validation of pending recommendations.
+    
+    Checks if targets or stop-losses were hit.
+    """
+    from app.services.prediction_validator import prediction_validator
+    
+    # Run in background to avoid timeout
+    background_tasks.add_task(prediction_validator.validate_pending_recommendations, db)
+    
+    return {"status": "started", "message": "Prediction validation started in background"}
+
+
+@router.get("/model/performance")
+async def get_model_performance(db: Session = Depends(get_db)):
+    """Get model accuracy and performance statistics."""
+    from app.models.database import ModelPerformance
+    from app.services.confidence_scorer import confidence_scorer
+    
+    # Get latest performance record
+    latest = db.query(ModelPerformance).order_by(
+        ModelPerformance.date.desc()
+    ).first()
+    
+    current_weights = {
+        "technical": confidence_scorer.technical_weight,
+        "financial": confidence_scorer.financial_weight,
+        "sentiment": confidence_scorer.sentiment_weight
+    }
+    
+    return {
+        "current_accuracy": latest.accuracy_pct if latest else 0.0,
+        "total_predictions": latest.total_predictions if latest else 0,
+        "successful_predictions": latest.successful_predictions if latest else 0,
+        "last_updated": latest.date if latest else None,
+        "active_weights": current_weights
+    }
+
+
+@router.post("/model/weights/apply-lessons")
+async def apply_lesson_learnings(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Apply learnings from recent lessons to adjust model weights.
+    """
+    from app.models.database import Lesson
+    from app.services.confidence_scorer import confidence_scorer
+    import json
+    
+    # Get recent lessons
+    lessons = db.query(Lesson).order_by(Lesson.created_at.desc()).limit(10).all()
+    
+    applied_count = 0
+    for lesson in lessons:
+        if lesson.weight_adjustment:
+            try:
+                adjustments = json.loads(lesson.weight_adjustment)
+                confidence_scorer.apply_lesson_adjustments(adjustments)
+                applied_count += 1
+            except:
+                continue
+                
+    return {
+        "status": "success",
+        "lessons_applied": applied_count,
+        "new_weights": {
+            "technical": confidence_scorer.technical_weight,
+            "financial": confidence_scorer.financial_weight,
+            "sentiment": confidence_scorer.sentiment_weight
+        }
     }

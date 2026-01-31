@@ -73,12 +73,17 @@ function App() {
   const [filteredStocks, setFilteredStocks] = useState<string[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
 
-  // Check health and fetch stock list on mount
+  // Check health on mount and poll every 30 seconds
   useEffect(() => {
-    fetch(`${API_BASE}/health`)
-      .then(res => res.json())
-      .then(setHealth)
-      .catch(() => setHealth(null))
+    const checkHealth = () => {
+      fetch(`${API_BASE}/health`)
+        .then(res => res.json())
+        .then(setHealth)
+        .catch(() => setHealth(null))
+    }
+    
+    checkHealth()
+    const interval = setInterval(checkHealth, 30000)
     
     // Fetch stock list
     fetch(`${API_BASE}/stocks/list`)
@@ -89,6 +94,8 @@ function App() {
         setFilteredStocks(allStocks.slice(0, 20))
       })
       .catch(() => setStockList([]))
+
+    return () => clearInterval(interval)
   }, [])
 
   // Filter stocks based on search input
@@ -110,7 +117,8 @@ function App() {
     setTopPicksLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${API_BASE}/top-picks?limit=5&max_stocks=100`)
+      // Request 500 stocks (backend handles bulk scan efficiently now)
+      const res = await fetch(`${API_BASE}/top-picks?limit=5&max_stocks=500`)
       if (!res.ok) throw new Error('Failed to fetch top picks')
       const data = await res.json()
       setTopPicks(data)

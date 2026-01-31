@@ -8,20 +8,14 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 # Try nsepython first, fallback to yfinance
-try:
-    from nsepython import quote_equity, equity_history, indiavix
-    NSE_AVAILABLE = True
-    logger.info("nsepython loaded successfully")
-except ImportError:
-    NSE_AVAILABLE = False
-    logger.warning("nsepython not available, using yfinance only")
+# nsepython will be imported lazily
+NSE_AVAILABLE = True # Assume true, handle ImportError in methods
 
-try:
-    import yfinance as yf
-    YF_AVAILABLE = True
-except ImportError:
-    YF_AVAILABLE = False
-    logger.error("yfinance not available!")
+
+
+# Remove top-level yfinance import to prevent startup hangs
+# It will be imported lazily in methods
+YF_AVAILABLE = True  # Assume true, handle ImportError in methods
 
 
 class TechnicalAnalyzer:
@@ -45,8 +39,9 @@ class TechnicalAnalyzer:
         """Fetch data from NSE Python."""
         if not self.nse_available:
             return None
-        
+            
         try:
+            from nsepython import quote_equity, equity_history
             clean_symbol = self._convert_symbol(symbol)
             
             # Get quote data using quote_equity
@@ -120,6 +115,7 @@ class TechnicalAnalyzer:
             return None
         
         try:
+            import yfinance as yf
             yf_symbol = self._get_yf_symbol(symbol)
             ticker = yf.Ticker(yf_symbol)
             
@@ -222,6 +218,119 @@ class TechnicalAnalyzer:
         
         return result
     
+    async def scan_batched(self, symbols: list[str]) -> Dict[str, Dict]:
+        """
+        Scan multiple stocks in bulk using yfinance (much faster).
+        
+        Args:
+            symbols: List of stock symbols (without .NS suffix)
+            
+        Returns:
+            Dictionary mapping symbol -> analysis result
+        """
+        if not symbols:
+            return {}
+            
+        # Convert to Yahoo format
+        yf_symbols = [f"{s}.NS" for s in symbols]
+        
+        try:
+            # Bulk download last 1 year data
+            logger.info(f"Bulk downloading data for {len(symbols)} stocks...")
+            
+            # Use run_in_executor to avoid blocking event loop
+            import asyncio
+            import yfinance as yf
+            
+            def download_bulk():
+                return yf.download(
+                    yf_symbols, 
+                    period="1y", 
+                    group_by='ticker', 
+                    threads=False,  # Disable threading to prevent crashes
+                    progress=False,
+                    show_errors=False
+                )
+            
+            data = await asyncio.get_event_loop().run_in_executor(None, download_bulk)
+            
+            results = {}
+            valid_symbols = set(symbols)
+            
+            # Process each stock
+            # yfinance returns a MultiIndex DataFrame if multiple tickers
+            for symbol in symbols:
+                yf_sym = f"{symbol}.NS"
+                try:
+                    if len(symbols) > 1:
+                        # Extract data for specific ticker from MultiIndex
+                        try:
+                            df = data[yf_sym].copy()
+                        except KeyError:
+                            # Try accessing by symbol (sometimes yfinance behavior varies)
+                            try:
+                                df = data[symbol].copy()
+                            except KeyError:
+                                continue
+                    else:
+                        df = data
+                    
+                    # Drop NaNs and check if empty
+                    df = df.dropna(subset=['Close'])
+                    if df.empty or len(df) < 14: # Basic check
+                         continue
+                        
+                    # Calculate indicators
+                    current_price = float(df['Close'].iloc[-1])
+                    prev_close = float(df['Close'].iloc[-2]) if len(df) > 1 else current_price
+                    change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close else 0
+                    
+                    # Basic Indicators
+                    closes = df['Close'].values
+                    rsi = self._calculate_rsi(closes)
+                    ema_200 = self._calculate_ema(closes, 200) if len(closes) >= 200 else None
+                    ema_50 = self._calculate_ema(closes, 50) if len(closes) >= 50 else None
+                    ema_20 = self._calculate_ema(closes, 20) if len(closes) >= 20 else None
+                    
+                    # Technical Score Calculation
+                    tech_score = 50
+                    
+                    # Trend
+                    if ema_50 and current_price > ema_50: tech_score += 15
+                    if ema_200 and current_price > ema_200: tech_score += 15
+                    if ema_20 and current_price > ema_20: tech_score += 5
+                    
+                    # Momentum (RSI)
+                    if 40 <= rsi <= 60: tech_score += 5
+                    elif 30 <= rsi < 40: tech_score += 10 # Oversold bounce potential
+                    elif rsi < 30: tech_score += 15 # Deep oversold
+                    elif 60 < rsi <= 70: tech_score += 10 # Strong momentum
+                    elif rsi > 70: tech_score -= 5 # Overbought
+                    
+                    results[symbol] = {
+                        "symbol": symbol,
+                        "current_price": round(current_price, 2),
+                        "prev_close": round(prev_close, 2),
+                        "change_pct": round(change_pct, 2),
+                        "rsi": round(rsi, 1),
+                        "ema_200": round(ema_200, 2) if ema_200 else None,
+                        "ema_50": round(ema_50, 2) if ema_50 else None,
+                        "price_above_ema": current_price > (ema_200 if ema_200 else 0),
+                        "technical_score": tech_score,
+                        "data_source": "yfinance_bulk"
+                    }
+                    
+                except Exception as e:
+                    # logger.debug(f"Error processing {symbol} in bulk batch: {e}")
+                    continue
+            
+            logger.info(f"Bulk scan complete. Successfully analyzed {len(results)}/{len(symbols)} stocks.")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Bulk download failed: {e}")
+            return {}
+
     def _calculate_rsi(self, prices: np.ndarray, period: int = 14) -> float:
         """Calculate RSI."""
         if len(prices) < period + 1:

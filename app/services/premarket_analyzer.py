@@ -74,77 +74,59 @@ class PreMarketAnalyzer:
             stocks = ALL_STOCKS[:max_stocks]
             buy_picks = []
             sell_picks = []
-            analyzed = 0
-            failed = 0
             
-            async def analyze_single(symbol: str):
-                try:
-                    tech_data = await technical_analyzer.analyze(symbol)
-                    if not tech_data or not tech_data.get("current_price"):
-                        return None
-                    
-                    rsi = tech_data.get("rsi", 50)
-                    tech_score = tech_data.get("technical_score", 50)
-                    price_above_ema = tech_data.get("price_above_ema", False)
-                    
-                    # Scoring logic
-                    if rsi < 35 and tech_score > 60:
-                        signal = "BUY"
-                        confidence = min(85, 50 + (35 - rsi) + tech_score / 5)
-                    elif rsi > 65 and tech_score < 40:
-                        signal = "SELL"
-                        confidence = min(85, 50 + (rsi - 65) + (100 - tech_score) / 5)
-                    elif price_above_ema and tech_score > 70:
-                        signal = "BUY"
-                        confidence = 55 + tech_score / 10
-                    elif not price_above_ema and tech_score < 35:
-                        signal = "SELL"
-                        confidence = 55 + (100 - tech_score) / 10
-                    else:
-                        signal = "HOLD"
-                        confidence = 50
-                    
-                    return {
-                        "symbol": symbol,
-                        "signal": signal,
-                        "confidence": round(confidence, 1),
-                        "current_price": tech_data.get("current_price"),
-                        "rsi": round(rsi, 1) if rsi else None,
-                        "change_pct": round(tech_data.get("change_pct", 0), 2),
-                        "ema_200": tech_data.get("ema_200"),
-                        "tech_score": tech_score,
-                        "data_source": tech_data.get("data_source", "unknown")
-                    }
-                except Exception as e:
-                    logger.debug(f"Analysis failed for {symbol}: {e}")
-                    return None
+            # Use bulk scanning (Much faster)
+            logger.info(f"Starting bulk scan for {len(stocks)} stocks...")
+            results_map = await technical_analyzer.scan_batched(stocks)
             
-            # Process in batches of 25 for speed
-            batch_size = 25
-            for i in range(0, len(stocks), batch_size):
-                batch = stocks[i:i+batch_size]
-                tasks = [analyze_single(s) for s in batch]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
+            analyzed = len(results_map)
+            failed = len(stocks) - analyzed
+            
+            for symbol, data in results_map.items():
+                tech_score = data.get("technical_score", 50)
+                rsi = data.get("rsi")
+                price_above_ema = data.get("price_above_ema", False)
                 
-                for result in results:
-                    if result and not isinstance(result, Exception):
-                        analyzed += 1
-                        if result["signal"] == "BUY":
-                            buy_picks.append(result)
-                        elif result["signal"] == "SELL":
-                            sell_picks.append(result)
-                    else:
-                        failed += 1
+                # Scoring logic
+                if rsi and rsi < 35 and tech_score > 60:
+                    signal = "BUY"
+                    confidence = min(85, 50 + (35 - rsi) + tech_score / 5)
+                elif rsi and rsi > 65 and tech_score < 40:
+                    signal = "SELL"
+                    confidence = min(85, 50 + (rsi - 65) + (100 - tech_score) / 5)
+                elif price_above_ema and tech_score > 70:
+                    signal = "BUY"
+                    confidence = 55 + tech_score / 10
+                elif not price_above_ema and tech_score < 35:
+                    signal = "SELL"
+                    confidence = 55 + (100 - tech_score) / 10
+                else:
+                    signal = "HOLD"
+                    confidence = 50
                 
-                # Log progress
-                progress = min(100, ((i + batch_size) / len(stocks)) * 100)
-                logger.info(f"Progress: {progress:.0f}% ({analyzed} analyzed, {failed} failed)")
+                result = {
+                    "symbol": symbol,
+                    "signal": signal,
+                    "confidence": round(confidence, 1),
+                    "current_price": data.get("current_price"),
+                    "rsi": rsi,
+                    "change_pct": data.get("change_pct", 0),
+                    "ema_200": data.get("ema_200"),
+                    "tech_score": tech_score,
+                    "data_source": "yfinance_bulk"
+                }
+
+                if signal == "BUY":
+                    buy_picks.append(result)
+                elif signal == "SELL":
+                    sell_picks.append(result)
             
             # Sort by confidence
             buy_picks.sort(key=lambda x: x["confidence"], reverse=True)
             sell_picks.sort(key=lambda x: x["confidence"], reverse=True)
             
             end_time = datetime.now()
+            # ... rest of code unchanged ...
             duration = (end_time - start_time).total_seconds()
             
             self.cache = {

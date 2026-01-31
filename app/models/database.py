@@ -202,4 +202,29 @@ class MarketCondition(Base):
     fii_activity_cr = Column(Float)  # FII buying/selling in Crores
     dii_activity_cr = Column(Float)  # DII buying/selling in Crores
     
+    
     recorded_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ModelPerformance(Base):
+    """Track model accuracy and performance metrics over time."""
+    __tablename__ = "model_performance"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    # Overall Accuracy
+    total_predictions = Column(Integer)
+    successful_predictions = Column(Integer)
+    accuracy_pct = Column(Float)
+    
+    # Sector Performance (JSON)
+    sector_accuracy = Column(Text)  # {"Banking": 65.5, "IT": 72.0}
+    
+    # Weight Configuration at this time
+    technical_weight = Column(Float)
+    financial_weight = Column(Float)
+    sentiment_weight = Column(Float)
+    
+    # Notes
+    notes = Column(String(500))

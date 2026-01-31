@@ -15,6 +15,28 @@ class ConfidenceScorer:
         self.financial_weight = settings.financial_weight
         self.sentiment_weight = settings.sentiment_weight
         self.historical_weight = settings.historical_weight
+        
+    def update_weights(self, technical: float, financial: float, sentiment: float):
+        """Update weights dynamically based on performance."""
+        # Normalize to ensure they sum to roughly same total
+        total = technical + financial + sentiment
+        target_total = 0.9  # Leave 0.1 for historical
+        
+        if total > 0:
+            self.technical_weight = (technical / total) * target_total
+            self.financial_weight = (financial / total) * target_total
+            self.sentiment_weight = (sentiment / total) * target_total
+            
+    def apply_lesson_adjustments(self, adjustments: Dict[str, float]):
+        """Apply weight adjustments from lessons."""
+        # Safety limits: max +/- 0.1 change per update
+        tech_adj = max(-0.1, min(0.1, adjustments.get("technical_weight", 0)))
+        fin_adj = max(-0.1, min(0.1, adjustments.get("financial_weight", 0)))
+        sent_adj = max(-0.1, min(0.1, adjustments.get("sentiment_weight", 0)))
+        
+        self.technical_weight = max(0.1, self.technical_weight + tech_adj)
+        self.financial_weight = max(0.1, self.financial_weight + fin_adj)
+        self.sentiment_weight = max(0.1, self.sentiment_weight + sent_adj)
     
     def calculate(
         self,

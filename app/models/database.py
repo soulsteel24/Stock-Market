@@ -30,7 +30,6 @@ class OutcomeType(enum.Enum):
     STOPLOSS_HIT = "STOPLOSS_HIT"
     EXPIRED = "EXPIRED"
 
-
 class Stock(Base):
     """Stock metadata and sector information."""
     __tablename__ = "stocks"

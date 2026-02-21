@@ -3,6 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
 import logging
+import pandas as pd
 
 from app.services.database import get_db
 from app.services.stock_analyzer import stock_analyzer
@@ -806,6 +807,7 @@ async def get_historical_data(symbol: str, period: str = "1y"):
     Valid periods: 1w, 1m, 3m, 6m, 1y, 2y, 5y, 10y, ytd, max
     """
     import yfinance as yf
+    import pandas as pd
     
     clean_symbol = symbol.upper().replace(".NS", "").replace(".BO", "").strip()
     yf_symbol = f"{clean_symbol}.NS"
@@ -823,6 +825,7 @@ async def get_historical_data(symbol: str, period: str = "1y"):
             try:
                 from nsepython import equity_history
                 from datetime import datetime, timedelta
+                import pandas as pd
                 
                 logger.info(f"yfinance missing historical data for {symbol}, trying nsepython fallback")
                 
@@ -869,16 +872,17 @@ async def get_historical_data(symbol: str, period: str = "1y"):
                                 "volume": vol
                             })
                             
-                    if data:
-                        return {
-                            "symbol": clean_symbol,
-                            "period": period,
-                            "data": data,
-                            "source": "nsepython"
-                        }
+                        if data:
+                            return {
+                                "symbol": clean_symbol,
+                                "period": period,
+                                "data": data,
+                                "source": "nsepython"
+                            }
             except Exception as nse_e:
                 logger.error(f"nsepython fallback failed for {symbol}: {nse_e}")
 
+            from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="No historical data found")
             
         # Format for frontend chart (yfinance behavior)
@@ -897,9 +901,11 @@ async def get_historical_data(symbol: str, period: str = "1y"):
             "source": "yfinance"
         }
     except Exception as e:
-        from fastapi import HTTPException
         logger.error(f"Historical data error for {symbol}: {e}")
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
 

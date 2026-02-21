@@ -2,8 +2,8 @@
 from typing import List, Dict, Any, Optional
 import logging
 from app.services.gemini_client import gemini_client
-from app.services.finbert_client import finbert_client
 from app.services.news_scraper import news_scraper, NewsItem
+from transformers import pipeline
 from app.models.schemas import SentimentType, SentimentAnalysis
 
 logger = logging.getLogger(__name__)
@@ -11,6 +11,15 @@ logger = logging.getLogger(__name__)
 
 class SentimentAnalyzer:
     """Sentiment analysis for stock news."""
+    
+    def __init__(self):
+        self.pipe = None
+        
+    def _get_pipeline(self):
+        if not self.pipe:
+            logger.info("Loading local FinBERT model...")
+            self.pipe = pipeline("text-classification", model="Vansh180/FinBERT-India-v1")
+        return self.pipe
     
     async def analyze_news(self, symbol: str) -> Optional[SentimentAnalysis]:
         """Analyze sentiment of news for a stock."""
@@ -33,18 +42,45 @@ class SentimentAnalyzer:
         
         # Custom FinBERT Analysis (Preferred locally)
         try:
-            finbert_result = await finbert_client.analyze_batch(titles)
-            if finbert_result["confidence"] > 0:
-                return SentimentAnalysis(
-                    overall_sentiment=SentimentType(finbert_result["overall_sentiment"]),
-                    confidence=finbert_result["confidence"],
-                    normalized_score=finbert_result.get("normalized_score", 0.0),
-                    positive_count=int(finbert_result["breakdown"]["positive"] * len(titles)),
-                    neutral_count=int(finbert_result["breakdown"]["neutral"] * len(titles)),
-                    negative_count=int(finbert_result["breakdown"]["negative"] * len(titles)),
-                    key_headlines=titles[:5],
-                    ml_breakdown=finbert_result["breakdown"]
-                )
+            finbert_pipe = self._get_pipeline()
+            results = finbert_pipe(titles)
+            
+            pos_count = 0
+            neu_count = 0
+            neg_count = 0
+            confidence_sum = 0.0
+            
+            for res in results:
+                label = res['label'].lower()
+                if label in ['positive', '1']:
+                    pos_count += 1
+                elif label in ['negative', '-1', '2']:
+                    neg_count += 1
+                else:
+                    neu_count += 1
+                confidence_sum += res['score']
+                
+            cnt = len(titles)
+            avg_confidence = (confidence_sum / cnt) * 100 if cnt > 0 else 50.0
+            
+            if pos_count > neg_count and pos_count > neu_count:
+                overall = SentimentType.POSITIVE
+            elif neg_count > pos_count and neg_count > neu_count:
+                overall = SentimentType.NEGATIVE
+            else:
+                overall = SentimentType.NEUTRAL
+                
+            normalized_score = (pos_count - neg_count) / max(cnt, 1)
+            
+            return SentimentAnalysis(
+                overall_sentiment=overall,
+                confidence=round(avg_confidence, 2),
+                normalized_score=round(normalized_score, 4),
+                positive_count=pos_count,
+                neutral_count=neu_count,
+                negative_count=neg_count,
+                key_headlines=titles[:5]
+            )
         except Exception as e:
             logger.warning(f"FinBERT failed, falling back to Gemini: {e}")
 

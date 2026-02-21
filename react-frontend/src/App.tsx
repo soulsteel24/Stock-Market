@@ -39,15 +39,20 @@ interface AnalysisResult {
     rsi: number
     ema_200: number
   }
-  financial_metrics?: {
-    pe_ratio?: number
-    debt_to_equity?: number
-    revenue_cr?: number
-    eps_growth_pct?: number
-    net_profit_margin?: number
-    promoter_holding_pct?: number
-    fii_holding_pct?: number
-    dii_holding_pct?: number
+  fundamentals?: {
+    ratios?: {
+      pe_ratio?: number
+      earnings_growth?: number
+    }
+    financials?: {
+      revenue_cr?: number
+      net_profit_margin?: number
+      debt_to_equity?: number
+    }
+    holdings?: {
+      promoters?: number
+      institutions?: number
+    }
   }
   sentiment_analysis?: {
     overall_sentiment: string
@@ -506,33 +511,33 @@ function App() {
                 )}
 
                 {/* Fundamentals Grid */}
-                {analysisResult.financial_metrics && Object.keys(analysisResult.financial_metrics).length > 0 && (
+                {analysisResult.fundamentals && Object.keys(analysisResult.fundamentals).length > 0 && (
                   <div className="section-card glass-card stagger-3 animate-fade-in">
                       <h3>📊 Deep Fundamentals & Holdings</h3>
                       <div className="indicators-grid four-col">
                            <div className="indicator">
                                <span className="label">P/E Ratio</span>
-                               <span className="value">{formatNumber(analysisResult.financial_metrics.pe_ratio || 0)}</span>
+                               <span className="value">{formatNumber(analysisResult.fundamentals.ratios?.pe_ratio || 0)}</span>
                            </div>
                            <div className="indicator">
                                <span className="label">EPS Growth</span>
-                               <span className="value">{formatNumber(analysisResult.financial_metrics.eps_growth_pct || 0)}%</span>
+                               <span className="value">{formatNumber(analysisResult.fundamentals.ratios?.earnings_growth || 0)}%</span>
                            </div>
                            <div className="indicator">
-                             <span className="label">Promoter Hold %</span>
-                             <span className="value">{formatNumber(analysisResult.raw_fundamentals?.promoter_holding_pct || analysisResult.raw_fundamentals?.held_percent_insiders)}%</span>
-                         </div>
-                         <div className="indicator">
-                             <span className="label">Inst. Hold %</span>
-                             <span className="value">{formatNumber((analysisResult.raw_fundamentals?.fii_holding_pct || 0) + (analysisResult.raw_fundamentals?.dii_holding_pct || 0) || analysisResult.raw_fundamentals?.held_percent_institutions)}%</span>
-                         </div>
+                               <span className="label">Promoter Hold %</span>
+                               <span className="value">{formatNumber(analysisResult.fundamentals.holdings?.promoters || analysisResult.raw_fundamentals?.promoter_holding_pct || analysisResult.raw_fundamentals?.held_percent_insiders)}%</span>
+                           </div>
+                           <div className="indicator">
+                               <span className="label">Inst. Hold %</span>
+                               <span className="value">{formatNumber(analysisResult.fundamentals.holdings?.institutions || (analysisResult.raw_fundamentals?.fii_holding_pct || 0) + (analysisResult.raw_fundamentals?.dii_holding_pct || 0) || analysisResult.raw_fundamentals?.held_percent_institutions)}%</span>
+                           </div>
                            <div className="indicator" style={{ background: 'rgba(56, 189, 248, 0.1)' }}>
                                <span className="label" style={{ color: '#38bdf8' }}>FII Hold %</span>
-                               <span className="value" style={{ color: '#38bdf8' }}>{formatNumber(analysisResult.financial_metrics.fii_holding_pct || 0)}%</span>
+                               <span className="value" style={{ color: '#38bdf8' }}>{formatNumber(analysisResult.raw_fundamentals?.fii_holding_pct || 0)}%</span>
                            </div>
                            <div className="indicator" style={{ background: 'rgba(56, 189, 248, 0.1)' }}>
                                <span className="label" style={{ color: '#38bdf8' }}>DII Hold %</span>
-                               <span className="value" style={{ color: '#38bdf8' }}>{formatNumber(analysisResult.financial_metrics.dii_holding_pct || 0)}%</span>
+                               <span className="value" style={{ color: '#38bdf8' }}>{formatNumber(analysisResult.raw_fundamentals?.dii_holding_pct || 0)}%</span>
                            </div>
                       </div>
                   </div>

@@ -56,11 +56,6 @@ app.add_middleware(
 # Include API routes
 app.include_router(router, prefix="/api/v1", tags=["Stock Analysis"])
 
-# Serve static frontend files
-frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
-if os.path.exists(frontend_path):
-    app.mount("/static", StaticFiles(directory=frontend_path), name="static")
-
 
 @app.on_event("startup")
 async def startup_event():
@@ -75,24 +70,14 @@ async def startup_event():
 
 @app.get("/")
 async def root():
-    """Serve the frontend UI."""
-    index_path = os.path.join(frontend_path, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
+    """Root endpoint."""
     return {
         "name": "Agentic Quantitative Research System",
         "version": __version__,
         "docs": "/docs",
         "health": "/api/v1/health",
-        "frontend": "Frontend not found. Check /frontend directory.",
-        "disclaimer": "This is an AI-generated research tool for educational purposes only."
+        "description": "API backend for Stock Market Analysis"
     }
-
-
-@app.get("/app")
-async def app_redirect():
-    """Redirect to frontend."""
-    return FileResponse(os.path.join(frontend_path, "index.html"))
 
 
 if __name__ == "__main__":

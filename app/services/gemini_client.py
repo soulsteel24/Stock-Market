@@ -95,7 +95,8 @@ Respond in JSON format only:
         technical_data: Dict[str, Any],
         financial_data: Optional[Dict[str, Any]],
         sentiment_data: Optional[Dict[str, Any]],
-        recommendation: str
+        recommendation: str,
+        forecast_data: Optional[Dict[str, Any]] = None
     ) -> List[str]:
         """Generate 3-point investment thesis."""
         prompt = f"""You are a Senior Quantitative Equity Researcher for NSE/BSE markets.
@@ -111,6 +112,8 @@ Technical Analysis:
 Financial Data: {json.dumps(financial_data) if financial_data else 'Not available'}
 
 Sentiment Analysis: {json.dumps(sentiment_data) if sentiment_data else 'Not analyzed'}
+
+Forecast Data: {json.dumps(forecast_data) if forecast_data else 'Not available'}
 
 Provide exactly 3 bullet points that justify the {recommendation} recommendation.
 Each point should cite specific data.

@@ -154,10 +154,15 @@ class TechnicalAnalyzer:
         # Try NSE first
         data = await self._fetch_nse_data(clean_symbol)
         
-        # Fallback to yfinance
-        if data is None:
-            logger.info(f"Falling back to yfinance for {clean_symbol}")
-            data = await self._fetch_yfinance_data(clean_symbol)
+        # Fallback to yfinance if data is None OR historical_df is missing
+        if data is None or data.get("historical_df") is None or len(data.get("historical_df")) < 14:
+            logger.info(f"Historical data missing/insufficient from NSE, trying yfinance for {clean_symbol}")
+            yf_data = await self._fetch_yfinance_data(clean_symbol)
+            if yf_data is not None:
+                if data is None:
+                    data = yf_data
+                else:
+                    data["historical_df"] = yf_data.get("historical_df")
         
         if data is None:
             logger.warning(f"No data found for {clean_symbol}")
@@ -166,7 +171,6 @@ class TechnicalAnalyzer:
         current_price = data.get("current_price", 0)
         df = data.get("historical_df")
         
-        # Calculate technical indicators
         result = {
             "symbol": clean_symbol,
             "current_price": current_price,
@@ -174,7 +178,8 @@ class TechnicalAnalyzer:
             "change_pct": data.get("change_pct"),
             "volume": data.get("volume"),
             "market_cap_cr": data.get("market_cap", 0),
-            "data_source": data.get("source", "unknown")
+            "data_source": data.get("source", "unknown"),
+            "historical_df": df
         }
         
         if df is not None and len(df) >= 14:
@@ -247,9 +252,8 @@ class TechnicalAnalyzer:
                     yf_symbols, 
                     period="1y", 
                     group_by='ticker', 
-                    threads=False,  # Disable threading to prevent crashes
-                    progress=False,
-                    show_errors=False
+                    threads=True,  # Enable threading for speed
+                    progress=False
                 )
             
             data = await asyncio.get_event_loop().run_in_executor(None, download_bulk)
@@ -321,7 +325,11 @@ class TechnicalAnalyzer:
                     }
                     
                 except Exception as e:
-                    # logger.debug(f"Error processing {symbol} in bulk batch: {e}")
+                    error_msg = str(e)
+                    if "delisted" in error_msg.lower() or "no data found" in error_msg.lower():
+                        logger.warning(f"Stock {symbol} appears to be delisted or invalid: {e}")
+                    else:
+                        logger.error(f"Error processing {symbol} in bulk batch: {e}")
                     continue
             
             logger.info(f"Bulk scan complete. Successfully analyzed {len(results)}/{len(symbols)} stocks.")
@@ -431,6 +439,7 @@ class TechnicalAnalyzer:
         # Try NSE first
         if self.nse_available:
             try:
+                from nsepython import quote_equity
                 quote = quote_equity(clean_symbol)
                 if quote and 'info' in quote:
                     info = quote.get('info', {})
@@ -446,6 +455,7 @@ class TechnicalAnalyzer:
         # Fallback to yfinance
         if self.yf_available:
             try:
+                import yfinance as yf
                 ticker = yf.Ticker(self._get_yf_symbol(clean_symbol))
                 info = ticker.info
                 return {

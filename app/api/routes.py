@@ -221,6 +221,142 @@ async def get_technical_analysis(symbol: str):
     return result
 
 
+@router.get("/search/comprehensive/{symbol}")
+async def get_comprehensive_stock_details(symbol: str):
+    """
+    Get all-in-one comprehensive details for a stock.
+    Combines Technicals, Fundamentals, and Sentiment.
+    """
+    from app.services.technical_analyzer import technical_analyzer
+    from app.services.fundamental_analyzer import fundamental_analyzer
+    from app.services.sentiment_analyzer import sentiment_analyzer
+    from app.agents.value_momentum_agent import value_momentum_agent
+    from app.agents.divergence_agent import divergence_agent
+    from app.agents.risk_reward_agent import risk_reward_agent
+    from app.agents.safety_veto_agent import safety_veto_agent
+    
+    clean_symbol = symbol.upper().replace(".NS", "").strip()
+    
+    # Run analyses in parallel
+    import asyncio
+    
+    tasks = [
+        technical_analyzer.analyze(clean_symbol),
+        fundamental_analyzer.full_fundamental_analysis(clean_symbol),
+        technical_analyzer.get_stock_info(clean_symbol),
+        sentiment_analyzer.analyze_news(clean_symbol)
+    ]
+    
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    technical = results[0] if not isinstance(results[0], Exception) else {}
+    fundamental = results[1] if not isinstance(results[1], Exception) else {}
+    stock_info = results[2] if not isinstance(results[2], Exception) else {}
+    sentiment_data = results[3] if not isinstance(results[3], Exception) else None
+    
+    if not technical and not fundamental:
+        raise HTTPException(status_code=404, detail=f"Stock {clean_symbol} not found")
+        
+    # Get forecast data using the historical_df from technical analysis
+    from app.services.forecast_service import forecast_service
+    forecast_data = None
+    if technical.get("historical_df") is not None:
+        try:
+            forecast_data = await forecast_service.predict_prices(clean_symbol, technical["historical_df"])
+        except Exception as e:
+            logging.error(f"Forecast error for {clean_symbol}: {e}")
+            pass
+
+    # --- Agent Debate Logic ---
+    agent_data = {
+        "technical": technical,
+        "financial": fundamental.get("fundamental_analysis", {}).get("key_ratios", {}),
+        "stock_info": stock_info or {},
+        "sentiment": sentiment_data
+    }
+    
+    # Run agents
+    filter_r, div_r, rr_r = await asyncio.gather(
+        value_momentum_agent.evaluate(agent_data),
+        divergence_agent.evaluate(agent_data),
+        risk_reward_agent.evaluate(agent_data)
+    )
+    
+    safety_r = await safety_veto_agent.evaluate(agent_data, "HOLD")
+    safety_veto_applied = safety_r.get("vetoed", False)
+    
+    # Momentum Text
+    m_passed = filter_r.get("passed_count", 0)
+    m_total = filter_r.get("total_evaluated", 0)
+    m_score = filter_r.get("filter_score", 0)
+    passing_metrics = [k.replace('_', ' ').title() for k, v in filter_r.get("criteria", {}).items() if v.get("passed")]
+    
+    momentum_text = f"The stock passed {m_passed} out of {m_total} Value/Momentum criteria (Score: {m_score}%). "
+    if passing_metrics:
+        momentum_text += f"Key passing strengths include: {', '.join(passing_metrics)}."
+    else:
+        momentum_text += "No strong momentum or value signals detected."
+        
+    # Contrarian Text
+    if div_r.get("has_divergence"):
+        div_reasons = [d.get("description", "") for d in div_r.get("divergences", [])]
+        contrarian_text = f"Detected {len(div_reasons)} bearish divergence(s): " + "; ".join(div_reasons) + "."
+    else:
+        contrarian_text = "No concerning bearish divergences detected between technicals and fundamentals."
+        
+    # Safety Text
+    if safety_veto_applied:
+        veto_reasons = safety_r.get("veto_reasons", [])
+        safety_text = f"Safety Veto applied due to high risk: " + "; ".join(veto_reasons) + ". Buying is restricted."
+    else:
+        safety_text = "All critical safety and liquidity protocols passed."
+
+    agent_debate = {
+        "momentum_agent": momentum_text,
+        "contrarian_agent": contrarian_text,
+        "safety_veto_agent": safety_text
+    }
+    # ---------------------------
+
+    # Merge and format response
+    return {
+        "symbol": clean_symbol,
+        "company_name": fundamental.get("company_name", clean_symbol),
+        "current_price": technical.get("current_price") or fundamental.get("current_price"),
+        "change_pct": technical.get("change_pct"),
+        "market_cap_cr": fundamental.get("market_cap_cr"),
+        "sector": fundamental.get("sector"),
+        "summary": {
+            "recommendation": fundamental.get("recommendation", "HOLD"),
+            "technical_score": technical.get("technical_score"),
+            "fundamental_score": fundamental.get("fundamental_analysis", {}).get("fundamental_score"),
+            "sentiment": fundamental.get("news_sentiment", {}).get("sentiment")
+        },
+        "technicals": {
+            "rsi": technical.get("rsi"),
+            "macd": technical.get("macd"),
+            "ema_200": technical.get("ema_200"),
+            "is_bullish": technical.get("technical_score", 0) > 60,
+            "is_bearish": technical.get("technical_score", 0) < 40
+        },
+        "fundamentals": {
+            "ratios": fundamental.get("fundamental_analysis", {}).get("key_ratios", {}),
+            "financials": {
+                "revenue_cr": fundamental.get("fundamental_analysis", {}).get("key_ratios", {}).get("revenue_growth"), # Placeholder if raw revenue not in key_ratios
+                "net_profit_margin": fundamental.get("fundamental_analysis", {}).get("key_ratios", {}).get("profit_margin"),
+                "debt_to_equity": fundamental.get("fundamental_analysis", {}).get("key_ratios", {}).get("debt_to_equity")
+            },
+            "holdings": {
+                 "promoters": fundamental.get("promoter_holding_pct"),
+                 "institutions": fundamental.get("fii_holding_pct")
+            }
+        },
+        "forecast_analysis": forecast_data,
+        "agent_debate": agent_debate,
+        "raw_fundamentals": fundamental # Send full fundamental object for frontend parsing
+    }
+
+
 @router.get("/sentiment/{symbol}")
 async def get_sentiment_analysis(symbol: str):
     """Get sentiment analysis for a stock."""
@@ -368,91 +504,17 @@ async def get_top_picks(
                 "from_cache": True
             }
     
-    # No cache - run fresh analysis
-    import asyncio
-    from app.services.technical_analyzer import technical_analyzer
-    from app.data.stock_universe import ALL_STOCKS
-    
-    buy_picks = []
-    sell_picks = []
-    analyzed_count = 0
-    failed_count = 0
-    
-    # Sort by confidence (descending)
-    buy_picks.sort(key=lambda x: x["confidence"], reverse=True)
-    sell_picks.sort(key=lambda x: x["confidence"], reverse=True)
+    # No cache - run fresh analysis with validation
+    picks = await pre_market_analyzer.generate_safe_picks(max_stocks)
     
     return {
         "generated_at": __import__("datetime").datetime.now().isoformat(),
         "market_status": "Open" if 9 <= __import__("datetime").datetime.now().hour < 16 else "Closed",
-        "buy_recommendations": buy_picks[:limit],
-        "sell_recommendations": sell_picks[:limit],
-        "total_analyzed": analyzed_count,
-        "total_attempted": len(stocks_to_analyze),
-        "failed": failed_count,
-        "disclaimer": "⚠️ This is AI-generated analysis for educational purposes only. Not financial advice."
-    }
-
-    # ... in get_top_picks ...
-    
-    # Use full stock universe (up to max_stocks)
-    stocks_to_analyze = ALL_STOCKS[:max_stocks]
-    
-    # Use bulk scanning for speed
-    results_map = await technical_analyzer.scan_batched(stocks_to_analyze)
-    
-    analyzed_count = len(results_map)
-    failed_count = len(stocks_to_analyze) - analyzed_count
-    
-    for symbol, data in results_map.items():
-        tech_score = data.get("technical_score", 50)
-        rsi = data.get("rsi")
-        price_above_ema = data.get("price_above_ema", False)
-        
-        # Scoring logic
-        if rsi and rsi < 35 and tech_score > 60:
-            signal = "BUY"
-            confidence = min(85, 50 + (35 - rsi) + tech_score / 5)
-        elif rsi and rsi > 65 and tech_score < 40:
-            signal = "SELL"
-            confidence = min(85, 50 + (rsi - 65) + (100 - tech_score) / 5)
-        elif price_above_ema and tech_score > 70:
-            signal = "BUY"
-            confidence = 55 + tech_score / 10
-        elif not price_above_ema and tech_score < 35:
-            signal = "SELL"
-            confidence = 55 + (100 - tech_score) / 10
-        else:
-            signal = "HOLD"
-            confidence = 50
-        
-        result = {
-            "symbol": symbol,
-            "signal": signal,
-            "confidence": round(confidence, 1),
-            "current_price": data.get("current_price"),
-            "rsi": rsi,
-            "change_pct": data.get("change_pct", 0),
-            "data_source": "yfinance_bulk"
-        }
-
-        if signal == "BUY":
-            buy_picks.append(result)
-        elif signal == "SELL":
-            sell_picks.append(result)
-
-    # Sort by confidence (descending)
-    buy_picks.sort(key=lambda x: x["confidence"], reverse=True)
-    sell_picks.sort(key=lambda x: x["confidence"], reverse=True)
-    
-    return {
-        "generated_at": __import__("datetime").datetime.now().isoformat(),
-        "market_status": "Open" if 9 <= __import__("datetime").datetime.now().hour < 16 else "Closed",
-        "buy_recommendations": buy_picks[:limit],
-        "sell_recommendations": sell_picks[:limit],
-        "total_analyzed": analyzed_count,
-        "total_attempted": len(stocks_to_analyze),
-        "failed": failed_count,
+        "buy_recommendations": picks["buy_recommendations"][:limit],
+        "sell_recommendations": picks["sell_recommendations"][:limit],
+        "total_analyzed": picks["analyzed_count"],
+        "total_attempted": max_stocks,
+        "failed": picks["failed_count"],
         "disclaimer": "⚠️ This is AI-generated analysis for educational purposes only. Not financial advice."
     }
 
@@ -735,3 +797,109 @@ async def apply_lesson_learnings(
             "sentiment": confidence_scorer.sentiment_weight
         }
     }
+
+
+@router.get("/historical/{symbol}")
+async def get_historical_data(symbol: str, period: str = "1y"):
+    """
+    Get historical price data for a stock over a specific period.
+    Valid periods: 1w, 1m, 3m, 6m, 1y, 2y, 5y, 10y, ytd, max
+    """
+    import yfinance as yf
+    
+    clean_symbol = symbol.upper().replace(".NS", "").replace(".BO", "").strip()
+    yf_symbol = f"{clean_symbol}.NS"
+    
+    valid_periods = ["1w", "1m", "3m", "6m", "1y", "2y", "5y", "10y", "ytd", "max"]
+    if period not in valid_periods:
+        period = "1y"
+        
+    try:
+        ticker = yf.Ticker(yf_symbol)
+        df = ticker.history(period=period)
+        
+        if df.empty:
+            # Fallback to nsepython
+            try:
+                from nsepython import equity_history
+                from datetime import datetime, timedelta
+                
+                logger.info(f"yfinance missing historical data for {symbol}, trying nsepython fallback")
+                
+                days = 365
+                if period == "1w": days = 7
+                elif period == "1m": days = 30
+                elif period == "3m": days = 90
+                elif period == "6m": days = 180
+                elif period == "2y": days = 730
+                elif period == "5y": days = 1825
+                elif period == "10y" or period == "max": days = 3650
+                
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days)
+                
+                hist_data = equity_history(clean_symbol, "EQ", start_date.strftime("%d-%m-%Y"), end_date.strftime("%d-%m-%Y"))
+                
+                if hist_data is not None and not hist_data.empty:
+                    # nsepython returns a dataframe. Let's format it.
+                    # Column names: 'CH_TIMESTAMP', 'CH_CLOSING_PRICE', 'CH_TOT_TRADED_QTY'
+                    data = []
+                    
+                    # Make sure it's sorted by date ascending 
+                    if 'CH_TIMESTAMP' in hist_data.columns:
+                        hist_data['parsed_date'] = pd.to_datetime(hist_data['CH_TIMESTAMP'])
+                        hist_data = hist_data.sort_values('parsed_date')
+                        
+                        for _, row in hist_data.iterrows():
+                            # Extract price
+                            price = 0
+                            if 'CH_CLOSING_PRICE' in row and not pd.isna(row['CH_CLOSING_PRICE']):
+                                price = float(row['CH_CLOSING_PRICE'])
+                            elif 'CH_LAST_TRADED_PRICE' in row and not pd.isna(row['CH_LAST_TRADED_PRICE']):
+                                price = float(row['CH_LAST_TRADED_PRICE'])
+                                
+                            # Extract volume
+                            vol = 0
+                            if 'CH_TOT_TRADED_QTY' in row and not pd.isna(row['CH_TOT_TRADED_QTY']):
+                                vol = int(row['CH_TOT_TRADED_QTY'])
+                                
+                            data.append({
+                                "date": row['parsed_date'].strftime("%Y-%m-%d"),
+                                "price": round(price, 2),
+                                "volume": vol
+                            })
+                            
+                    if data:
+                        return {
+                            "symbol": clean_symbol,
+                            "period": period,
+                            "data": data,
+                            "source": "nsepython"
+                        }
+            except Exception as nse_e:
+                logger.error(f"nsepython fallback failed for {symbol}: {nse_e}")
+
+            raise HTTPException(status_code=404, detail="No historical data found")
+            
+        # Format for frontend chart (yfinance behavior)
+        data = []
+        for date, row in df.iterrows():
+            data.append({
+                "date": date.strftime("%Y-%m-%d"),
+                "price": round(float(row["Close"]), 2),
+                "volume": int(row["Volume"]) if "Volume" in row and not pd.isna(row["Volume"]) else 0
+            })
+            
+        return {
+            "symbol": clean_symbol,
+            "period": period,
+            "data": data,
+            "source": "yfinance"
+        }
+    except Exception as e:
+        from fastapi import HTTPException
+        logger.error(f"Historical data error for {symbol}: {e}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+

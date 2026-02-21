@@ -14,13 +14,17 @@ from app.agents.value_momentum_agent import value_momentum_agent
 from app.agents.divergence_agent import divergence_agent
 from app.agents.risk_reward_agent import risk_reward_agent
 from app.agents.safety_veto_agent import safety_veto_agent
+from app.services.forecast_service import forecast_service
 from app.models.schemas import (
     StockAnalysisResponse, 
     RecommendationType,
     TechnicalIndicators,
     FinancialMetrics,
     ConfidenceBreakdown,
-    Warning
+    Warning,
+    ForecastAnalysis,
+    ForecastDataPoint,
+    AgentDebate
 )
 
 logger = logging.getLogger(__name__)
@@ -58,38 +62,59 @@ class StockAnalyzer:
         tasks = []
         task_map = {}  # Track which index corresponds to which task
         
-        if include_technicals:
-            task_map[len(tasks)] = "technical"
-            tasks.append(technical_analyzer.analyze(symbol))
-        
-        task_map[len(tasks)] = "info"
-        tasks.append(technical_analyzer.get_stock_info(symbol))
-        
         if include_news:
             task_map[len(tasks)] = "sentiment"
             tasks.append(sentiment_analyzer.analyze_news(symbol))
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # New: Forecast
+        task_map[len(tasks)] = "forecast"
+        # We need historical data for forecast; fetched in technical_analyzer step.
+        # But we don't have it yet. 
+        # Strategy: Run technicals first, then forecast. 
+        # Actually, let's run forecast separately after technicals or pass a promise?
+        # Simpler: Gather technicals first, then launch forecast + agents.
         
-        # Parse results using task_map
-        technical_data = {}
-        stock_info = {}
+        # NOTE: Changing the parallel flow slightly.
+        # Phase 1: Technicals & Info (needed for others)
+        phase1_tasks = [
+            technical_analyzer.analyze(symbol),
+            technical_analyzer.get_stock_info(symbol)
+        ]
+        
+        phase1_results = await asyncio.gather(*phase1_tasks, return_exceptions=True)
+        technical_data = phase1_results[0] if not isinstance(phase1_results[0], Exception) else {}
+        stock_info = phase1_results[1] if not isinstance(phase1_results[1], Exception) else {}
+        
+        # Phase 2: Sentiment, Forecast, Agents (Forecast need hist data from technicals)
+        phase2_task_map = {}
+        phase2_tasks = []
+        
+        if include_news:
+            phase2_task_map[len(phase2_tasks)] = "sentiment"
+            phase2_tasks.append(sentiment_analyzer.analyze_news(symbol))
+            
+        if technical_data.get("historical_df") is not None:
+             phase2_task_map[len(phase2_tasks)] = "forecast"
+             phase2_tasks.append(forecast_service.predict_prices(symbol, technical_data["historical_df"]))
+        
+        results = await asyncio.gather(*phase2_tasks, return_exceptions=True)
+        
+        # Parse Phase 2 results
         sentiment_data = None
+        forecast_result = {}
         
         for idx, result in enumerate(results):
-            task_type = task_map.get(idx)
+            task_type = phase2_task_map.get(idx)
             if isinstance(result, Exception):
                 logger.error(f"{task_type} failed: {result}")
                 continue
             if result is None:
                 continue
                 
-            if task_type == "technical":
-                technical_data = result or {}
-            elif task_type == "info":
-                stock_info = result or {}
-            elif task_type == "sentiment":
+            if task_type == "sentiment":
                 sentiment_data = result
+            elif task_type == "forecast":
+                forecast_result = result
         
         current_price = technical_data.get("current_price", 0) if technical_data else 0
         if current_price == 0:
@@ -115,7 +140,8 @@ class StockAnalyzer:
             filter_result, 
             divergence_result,
             risk_reward_result,
-            technical_data
+            technical_data,
+            forecast_result
         )
         
         # Safety veto check
@@ -152,7 +178,8 @@ class StockAnalyzer:
                 "sentiment": sentiment_data.overall_sentiment.value if sentiment_data else "NEUTRAL",
                 "confidence": sentiment_data.confidence if sentiment_data else 50
             } if sentiment_data else None,
-            recommendation=final_recommendation
+            recommendation=final_recommendation,
+            forecast_data=forecast_result
         )
         
         # Compile warnings
@@ -179,6 +206,43 @@ class StockAnalyzer:
                 message=w["message"],
                 severity=w.get("severity", "WARNING")
             ))
+        
+        # Build Agent Debate
+        # 1. Momentum Agent
+        m_passed = filter_result.get("passed_count", 0)
+        m_total = filter_result.get("total_evaluated", 0)
+        m_score = filter_result.get("filter_score", 0)
+        
+        passing_metrics = []
+        for k, v in filter_result.get("criteria", {}).items():
+            if v.get("passed") is True:
+                passing_metrics.append(k.replace('_', ' ').title())
+                
+        momentum_text = f"The stock passed {m_passed} out of {m_total} Value/Momentum criteria (Score: {m_score}%). "
+        if passing_metrics:
+            momentum_text += f"Key passing strengths include: {', '.join(passing_metrics)}."
+        else:
+            momentum_text += "No strong momentum or value signals detected."
+            
+        # 2. Contrarian (Divergence) Agent
+        if divergence_result.get("has_divergence"):
+            div_reasons = [d.get("description", "") for d in divergence_result.get("divergences", [])]
+            contrarian_text = f"Detected {len(div_reasons)} bearish divergence(s): " + "; ".join(div_reasons) + "."
+        else:
+            contrarian_text = "No concerning bearish divergences detected between technicals and fundamentals."
+            
+        # 3. Safety Veto Agent
+        if safety_veto_applied:
+            veto_reasons = safety_result.get("veto_reasons", [])
+            safety_text = f"Safety Veto applied due to high risk: " + "; ".join(veto_reasons) + ". Buying is restricted."
+        else:
+            safety_text = "All critical safety and liquidity protocols passed."
+            
+        agent_debate = AgentDebate(
+            momentum_agent=momentum_text,
+            contrarian_agent=contrarian_text,
+            safety_veto_agent=safety_text
+        )
         
         # Build response
         return StockAnalysisResponse(
@@ -210,10 +274,12 @@ class StockAnalyzer:
             ),
             financial_metrics=FinancialMetrics() if not agent_data.get("financial") else None,
             sentiment_analysis=sentiment_data,
+            agent_debate=agent_debate,
             investment_thesis=thesis,
-            sources=["Technical Analysis", "News Sentiment"] + (
+            sources=["Technical Analysis", "News Sentiment", "AI Forecast"] + (
                 ["BSE/NSE Announcements"] if include_news else []
             ),
+            forecast_analysis=ForecastAnalysis(**forecast_result) if forecast_result else None,
             warnings=warnings,
             safety_veto_applied=safety_veto_applied,
             analyzed_at=datetime.utcnow()
@@ -224,7 +290,8 @@ class StockAnalyzer:
         filter_result: Dict[str, Any],
         divergence_result: Dict[str, Any],
         risk_reward_result: Dict[str, Any],
-        technical_data: Dict[str, Any]
+        technical_data: Dict[str, Any],
+        forecast_result: Dict[str, Any]
     ) -> str:
         """Determine recommendation based on agent outputs."""
         
@@ -241,11 +308,14 @@ class StockAnalyzer:
         # Technical score
         tech_score = technical_data.get("technical_score", 50)
         
+        # Forecast Trend
+        forecast_trend = forecast_result.get("trend_pct", 0)
+        
         # Decision logic
         if passed_filter and meets_ratio and not has_divergence:
-            if tech_score >= 70:
+            if tech_score >= 70 or forecast_trend > 5.0:
                 return "BUY"
-            elif tech_score >= 50:
+            elif tech_score >= 50 or forecast_trend > 0:
                 return "WATCHLIST"
             else:
                 return "HOLD"

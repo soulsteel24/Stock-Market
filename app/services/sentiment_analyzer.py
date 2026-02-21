@@ -2,6 +2,7 @@
 from typing import List, Dict, Any, Optional
 import logging
 from app.services.gemini_client import gemini_client
+from app.services.finbert_client import finbert_client
 from app.services.news_scraper import news_scraper, NewsItem
 from app.models.schemas import SentimentType, SentimentAnalysis
 
@@ -30,7 +31,24 @@ class SentimentAnalyzer:
         # Extract titles for analysis
         titles = [item.title for item in news_items]
         
-        # Analyze with Gemini
+        # Custom FinBERT Analysis (Preferred locally)
+        try:
+            finbert_result = await finbert_client.analyze_batch(titles)
+            if finbert_result["confidence"] > 0:
+                return SentimentAnalysis(
+                    overall_sentiment=SentimentType(finbert_result["overall_sentiment"]),
+                    confidence=finbert_result["confidence"],
+                    normalized_score=finbert_result.get("normalized_score", 0.0),
+                    positive_count=int(finbert_result["breakdown"]["positive"] * len(titles)),
+                    neutral_count=int(finbert_result["breakdown"]["neutral"] * len(titles)),
+                    negative_count=int(finbert_result["breakdown"]["negative"] * len(titles)),
+                    key_headlines=titles[:5],
+                    ml_breakdown=finbert_result["breakdown"]
+                )
+        except Exception as e:
+            logger.warning(f"FinBERT failed, falling back to Gemini: {e}")
+
+        # Fallback to Gemini
         if gemini_client.is_connected():
             result = await gemini_client.analyze_sentiment(titles)
             
@@ -50,9 +68,12 @@ class SentimentAnalyzer:
             
             overall = result.get("overall_sentiment", "NEUTRAL").upper()
             
+            normalized_score = (positive - negative) / max(len(titles), 1)
+            
             return SentimentAnalysis(
                 overall_sentiment=SentimentType(overall),
                 confidence=result.get("confidence", 50.0),
+                normalized_score=round(normalized_score, 4),
                 positive_count=positive,
                 neutral_count=neutral,
                 negative_count=negative,
@@ -105,9 +126,12 @@ class SentimentAnalyzer:
             overall = SentimentType.NEUTRAL
             confidence = 50.0
         
+        normalized_score = (positive - negative) / max(total, 1)
+        
         return SentimentAnalysis(
             overall_sentiment=overall,
             confidence=round(confidence, 2),
+            normalized_score=round(normalized_score, 4),
             positive_count=positive,
             neutral_count=neutral,
             negative_count=negative,

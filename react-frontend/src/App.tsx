@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import './App.css'
+import ForecastChart from './components/ForecastChart'
+import PriceChart from './components/PriceChart'
 
 // Types
 interface StockPick {
@@ -25,30 +27,51 @@ interface AnalysisResult {
   symbol: string
   name: string
   sector: string
+  current_price: number
   recommendation: string
   confidence_score: number
-  current_price: number
-  entry_price: number
-  target_price: number
-  stop_loss: number
-  risk_reward_ratio: string
-  potential_return_pct: number
+  confidence_breakdown: {
+    technical_score: number
+    financial_score: number
+    sentiment_score: number
+  }
   technical_indicators: {
     rsi: number
     ema_200: number
-    price_above_ema: boolean
   }
-  sentiment_analysis: {
+  financial_metrics?: {
+    pe_ratio?: number
+    debt_to_equity?: number
+    revenue_cr?: number
+    eps_growth_pct?: number
+    net_profit_margin?: number
+    promoter_holding_pct?: number
+    fii_holding_pct?: number
+    dii_holding_pct?: number
+  }
+  sentiment_analysis?: {
     overall_sentiment: string
-    positive_count: number
-    neutral_count: number
-    negative_count: number
-    key_headlines: string[]
+    confidence: number
+    normalized_score: number
+    ml_breakdown?: {
+      positive: number
+      neutral: number
+      negative: number
+    }
   }
-  investment_thesis: string[]
-  warnings: Array<{ message: string }>
-  safety_veto_applied: boolean
-  disclaimer: string
+  agent_debate?: {
+    momentum_agent: string
+    contrarian_agent: string
+    safety_veto_agent: string
+  }
+  forecast_analysis?: {
+    forecast: any[]
+    trend_pct: number
+    bullish_trend: boolean
+    model: string
+    days_forecasted: number
+  }
+  raw_fundamentals?: any // For extra fields like EBITDA
 }
 
 interface HealthStatus {
@@ -58,7 +81,7 @@ interface HealthStatus {
   database_connected: boolean
 }
 
-const API_BASE = 'http://127.0.0.1:8000/api/v1'
+const API_BASE = '/api/v1'
 
 function App() {
   const [topPicks, setTopPicks] = useState<TopPicks | null>(null)
@@ -72,9 +95,13 @@ function App() {
   const [stockList, setStockList] = useState<string[]>([])
   const [filteredStocks, setFilteredStocks] = useState<string[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
 
   // Check health on mount and poll every 30 seconds
   useEffect(() => {
+    // apply theme body wide
+    document.body.className = theme === 'light' ? 'light-theme' : '';
+    
     const checkHealth = () => {
       fetch(`${API_BASE}/health`)
         .then(res => res.json())
@@ -96,7 +123,7 @@ function App() {
       .catch(() => setStockList([]))
 
     return () => clearInterval(interval)
-  }, [])
+  }, [theme])
 
   // Filter stocks based on search input
   useEffect(() => {
@@ -129,7 +156,7 @@ function App() {
     }
   }, [])
 
-  // Analyze single stock
+  // Analyze single stock (Comprehensive)
   const analyzeStock = async (symbol: string) => {
     if (!symbol.trim()) return
     setLoading(true)
@@ -138,6 +165,7 @@ function App() {
     setShowDropdown(false)
     
     try {
+      // Use the main orchestration endpoint
       const res = await fetch(`${API_BASE}/analyze/${symbol.toUpperCase()}`, {
         method: 'POST'
       })
@@ -175,16 +203,20 @@ function App() {
     }).format(price)
   }
 
+  const formatNumber = (num: number) => {
+      if (num === undefined || num === null) return 'N/A';
+      return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 }).format(num);
+  }
+
   const getSignalColor = (signal: string) => {
-    switch (signal) {
-      case 'BUY': return 'var(--success)'
-      case 'SELL': return 'var(--danger)'
-      default: return 'var(--warning)'
-    }
+    const s = signal?.toUpperCase() || '';
+    if (s.includes('BUY')) return 'var(--success)'
+    if (s.includes('SELL')) return 'var(--danger)'
+    return 'var(--warning)'
   }
 
   return (
-    <div className="app">
+    <div className={`app ${theme === 'light' ? 'light-theme' : ''}`}>
       {/* Header */}
       <header className="header">
         <div className="logo">
@@ -198,13 +230,21 @@ function App() {
           >
             Dashboard
           </button>
-          <button 
-            className={`nav-btn ${activeTab === 'search' ? 'active' : ''}`}
-            onClick={() => setActiveTab('search')}
-          >
-            Search
-          </button>
-        </nav>
+            <button 
+              className={`nav-btn ${activeTab === 'search' ? 'active' : ''}`}
+              onClick={() => setActiveTab('search')}
+            >
+              Search
+            </button>
+            <button 
+              className="nav-btn"
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              title="Toggle Theme"
+              style={{ padding: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
+          </nav>
         <div className="status">
           <span className={`status-dot ${health?.status === 'healthy' ? 'online' : 'offline'}`}></span>
           <span>{health?.status === 'healthy' ? 'Connected' : 'Offline'}</span>
@@ -214,11 +254,12 @@ function App() {
       <main className="main">
         {/* Dashboard Tab */}
         {activeTab === 'dashboard' && (
-          <div className="dashboard">
+          <div className="dashboard animate-fade-in">
             <div className="dashboard-header">
               <div>
                 <h1>Daily Stock Picks</h1>
                 <p className="subtitle">AI-powered recommendations from Nifty 50</p>
+                <small style={{color: '#94a3b8'}}>* Pre-market analysis (cached)</small>
               </div>
               <button 
                 className="refresh-btn" 
@@ -252,9 +293,9 @@ function App() {
             {topPicks && !topPicksLoading && (
               <div className="picks-grid">
                 {/* Buy Recommendations */}
-                <div className="picks-card buy">
+                <div className="picks-card glass-card buy stagger-1 animate-fade-in">
                   <div className="picks-header">
-                    <span className="picks-icon">📈</span>
+                    <span className="picks-icon">🚀</span>
                     <h2>Top Buy Picks</h2>
                   </div>
                   {topPicks.buy_recommendations.length === 0 ? (
@@ -276,9 +317,6 @@ function App() {
                             <span className="pick-confidence" style={{ color: 'var(--success)' }}>
                               {pick.confidence}%
                             </span>
-                            <span className={`pick-change ${pick.change_pct >= 0 ? 'positive' : 'negative'}`}>
-                              {pick.change_pct >= 0 ? '+' : ''}{pick.change_pct}%
-                            </span>
                           </div>
                         </div>
                       ))}
@@ -287,9 +325,9 @@ function App() {
                 </div>
 
                 {/* Sell Recommendations */}
-                <div className="picks-card sell">
+                <div className="picks-card glass-card sell stagger-2 animate-fade-in">
                   <div className="picks-header">
-                    <span className="picks-icon">📉</span>
+                    <span className="picks-icon">💎</span>
                     <h2>Top Sell Picks</h2>
                   </div>
                   {topPicks.sell_recommendations.length === 0 ? (
@@ -311,9 +349,6 @@ function App() {
                             <span className="pick-confidence" style={{ color: 'var(--danger)' }}>
                               {pick.confidence}%
                             </span>
-                            <span className={`pick-change ${pick.change_pct >= 0 ? 'positive' : 'negative'}`}>
-                              {pick.change_pct >= 0 ? '+' : ''}{pick.change_pct}%
-                            </span>
                           </div>
                         </div>
                       ))}
@@ -322,23 +357,15 @@ function App() {
                 </div>
               </div>
             )}
-
-            {topPicks && (
-              <div className="picks-meta">
-                <span>Generated: {new Date(topPicks.generated_at).toLocaleString()}</span>
-                <span>Market: {topPicks.market_status}</span>
-                <span>Stocks Analyzed: {topPicks.total_analyzed}</span>
-              </div>
-            )}
           </div>
         )}
 
         {/* Search Tab */}
         {activeTab === 'search' && (
-          <div className="search-section">
+          <div className="search-section animate-fade-in">
             <div className="search-header">
-              <h1>Stock Analysis</h1>
-              <p className="subtitle">Select or search for any NSE stock</p>
+              <h1>Stock Analysis (Real-time)</h1>
+              <p className="subtitle">Select or search for any NSE stock to get live analysis</p>
             </div>
 
             <form onSubmit={handleSearch} className="search-form">
@@ -395,13 +422,13 @@ function App() {
             )}
 
             {analysisResult && !loading && (
-              <div className="analysis-results">
+              <div className="analysis-results animate-fade-in stagger-1">
                 {/* Stock Header */}
-                <div className="stock-card">
+                <div className="stock-card glass-card">
                   <div className="stock-info">
-                    <h2>{analysisResult.name}</h2>
+                    <h2>{analysisResult.name || analysisResult.symbol}</h2>
                     <span className="badge">{analysisResult.symbol}</span>
-                    <span className="sector">{analysisResult.sector}</span>
+                    <span className="sector">{analysisResult.sector || 'Unknown Sector'}</span>
                   </div>
                   <div className="stock-price">
                     <span className="price">{formatPrice(analysisResult.current_price)}</span>
@@ -409,7 +436,7 @@ function App() {
                 </div>
 
                 {/* Recommendation */}
-                <div className="recommendation-card">
+                <div className="recommendation-card glass-card stagger-2 animate-fade-in">
                   <div 
                     className="recommendation-badge"
                     style={{ background: getSignalColor(analysisResult.recommendation) + '22', 
@@ -418,40 +445,101 @@ function App() {
                   >
                     {analysisResult.recommendation}
                   </div>
-                  <div className="confidence">
-                    <span className="label">Confidence</span>
-                    <div className="confidence-bar">
-                      <div 
-                        className="confidence-fill" 
-                        style={{ width: `${analysisResult.confidence_score}%` }}
-                      ></div>
+                 
+                  <div className="scores-grid">
+                      <div className="score-item">
+                          <span>Technical</span>
+                          <b>{Math.round(analysisResult.confidence_breakdown.technical_score)}</b>
+                      </div>
+                      <div className="score-item">
+                          <span>Financial</span>
+                          <b>{Math.round(analysisResult.confidence_breakdown.financial_score)}</b>
+                      </div>
+                      <div className="score-item">
+                          <span>Sentiment</span>
+                          <b>{Math.round(analysisResult.confidence_breakdown.sentiment_score)}</b>
+                      </div>
+                  </div>
+                </div>
+                
+                {/* Sentiment Gauge (FinBERT) */}
+                {analysisResult.sentiment_analysis && (
+                  <div className="section-card glass-card stagger-3 animate-fade-in sentiment-section">
+                    <h3>📰 News Confidence (FinBERT)</h3>
+                    <div className="sentiment-bar-container">
+                      <div className="sentiment-bar-labels">
+                        <span>Negative: {Math.round((analysisResult.sentiment_analysis.ml_breakdown?.negative || 0) * 100)}%</span>
+                        <span>Neutral: {Math.round((analysisResult.sentiment_analysis.ml_breakdown?.neutral || 0) * 100)}%</span>
+                        <span>Positive: {Math.round((analysisResult.sentiment_analysis.ml_breakdown?.positive || 0) * 100)}%</span>
+                      </div>
+                      <div className="sentiment-segmented-bar">
+                        <div className="segment down" style={{width: `${(analysisResult.sentiment_analysis.ml_breakdown?.negative || 0) * 100}%`}}></div>
+                        <div className="segment neutral" style={{width: `${(analysisResult.sentiment_analysis.ml_breakdown?.neutral || 1) * 100}%`}}></div>
+                        <div className="segment up" style={{width: `${(analysisResult.sentiment_analysis.ml_breakdown?.positive || 0) * 100}%`}}></div>
+                      </div>
+                      <div className="sentiment-summary">
+                        <strong>Overall: {analysisResult.sentiment_analysis.overall_sentiment}</strong> (Normalized Score: {analysisResult.sentiment_analysis.normalized_score > 0 ? '+' : ''}{analysisResult.sentiment_analysis.normalized_score.toFixed(2)})
+                      </div>
                     </div>
-                    <span className="value">{analysisResult.confidence_score.toFixed(1)}%</span>
                   </div>
-                </div>
+                )}
 
-                {/* Price Targets */}
-                <div className="targets-grid">
-                  <div className="target-card entry">
-                    <span className="label">Entry</span>
-                    <span className="value">{formatPrice(analysisResult.entry_price)}</span>
+                {/* Agent Debate Board */}
+                {analysisResult.agent_debate && (
+                  <div className="section-card glass-card stagger-3 animate-fade-in">
+                    <h3>🤖 Multi-Agent Debate</h3>
+                    <div className="agent-debate-board">
+                      <div className="agent-monologue momentum-agent">
+                        <h4>🚀 Value/Momentum Agent</h4>
+                        <p>{analysisResult.agent_debate.momentum_agent}</p>
+                      </div>
+                      <div className="agent-monologue contrarian-agent">
+                        <h4>⚖️ Contrarian (Divergence) Agent</h4>
+                        <p>{analysisResult.agent_debate.contrarian_agent}</p>
+                      </div>
+                      <div className="agent-monologue safety-agent">
+                        <h4>🛡️ Safety Veto Agent</h4>
+                        <p>{analysisResult.agent_debate.safety_veto_agent}</p>
+                      </div>
+                    </div>
                   </div>
-                  <div className="target-card target">
-                    <span className="label">Target</span>
-                    <span className="value">{formatPrice(analysisResult.target_price)}</span>
+                )}
+
+                {/* Fundamentals Grid */}
+                {analysisResult.financial_metrics && Object.keys(analysisResult.financial_metrics).length > 0 && (
+                  <div className="section-card glass-card stagger-3 animate-fade-in">
+                      <h3>📊 Deep Fundamentals & Holdings</h3>
+                      <div className="indicators-grid four-col">
+                           <div className="indicator">
+                               <span className="label">P/E Ratio</span>
+                               <span className="value">{formatNumber(analysisResult.financial_metrics.pe_ratio || 0)}</span>
+                           </div>
+                           <div className="indicator">
+                               <span className="label">EPS Growth</span>
+                               <span className="value">{formatNumber(analysisResult.financial_metrics.eps_growth_pct || 0)}%</span>
+                           </div>
+                           <div className="indicator">
+                             <span className="label">Promoter Hold %</span>
+                             <span className="value">{formatNumber(analysisResult.raw_fundamentals?.promoter_holding_pct || analysisResult.raw_fundamentals?.held_percent_insiders)}%</span>
+                         </div>
+                         <div className="indicator">
+                             <span className="label">Inst. Hold %</span>
+                             <span className="value">{formatNumber((analysisResult.raw_fundamentals?.fii_holding_pct || 0) + (analysisResult.raw_fundamentals?.dii_holding_pct || 0) || analysisResult.raw_fundamentals?.held_percent_institutions)}%</span>
+                         </div>
+                           <div className="indicator" style={{ background: 'rgba(56, 189, 248, 0.1)' }}>
+                               <span className="label" style={{ color: '#38bdf8' }}>FII Hold %</span>
+                               <span className="value" style={{ color: '#38bdf8' }}>{formatNumber(analysisResult.financial_metrics.fii_holding_pct || 0)}%</span>
+                           </div>
+                           <div className="indicator" style={{ background: 'rgba(56, 189, 248, 0.1)' }}>
+                               <span className="label" style={{ color: '#38bdf8' }}>DII Hold %</span>
+                               <span className="value" style={{ color: '#38bdf8' }}>{formatNumber(analysisResult.financial_metrics.dii_holding_pct || 0)}%</span>
+                           </div>
+                      </div>
                   </div>
-                  <div className="target-card stoploss">
-                    <span className="label">Stop Loss</span>
-                    <span className="value">{formatPrice(analysisResult.stop_loss)}</span>
-                  </div>
-                  <div className="target-card ratio">
-                    <span className="label">Risk:Reward</span>
-                    <span className="value">{analysisResult.risk_reward_ratio}</span>
-                  </div>
-                </div>
+                )}
 
                 {/* Technical Indicators */}
-                <div className="section-card">
+                <div className="section-card glass-card stagger-3 animate-fade-in">
                   <h3>📈 Technical Indicators</h3>
                   <div className="indicators-grid">
                     <div className="indicator">
@@ -462,49 +550,40 @@ function App() {
                       <span className="label">EMA 200</span>
                       <span className="value">{analysisResult.technical_indicators?.ema_200?.toFixed(2) || 'N/A'}</span>
                     </div>
-                    <div className="indicator">
-                      <span className="label">Price vs EMA</span>
-                      <span className={`value ${analysisResult.technical_indicators?.price_above_ema ? 'positive' : 'negative'}`}>
-                        {analysisResult.technical_indicators?.price_above_ema ? 'Above' : 'Below'}
-                      </span>
-                    </div>
                   </div>
                 </div>
 
-                {/* Sentiment */}
-                <div className="section-card">
-                  <h3>📰 Sentiment Analysis</h3>
-                  <div className="sentiment-row">
-                    <span className={`sentiment-badge ${analysisResult.sentiment_analysis?.overall_sentiment?.toLowerCase()}`}>
-                      {analysisResult.sentiment_analysis?.overall_sentiment || 'N/A'}
-                    </span>
-                    <div className="sentiment-counts">
-                      <span className="positive">+{analysisResult.sentiment_analysis?.positive_count || 0}</span>
-                      <span className="neutral">○{analysisResult.sentiment_analysis?.neutral_count || 0}</span>
-                      <span className="negative">-{analysisResult.sentiment_analysis?.negative_count || 0}</span>
-                    </div>
-                  </div>
-                  {analysisResult.sentiment_analysis?.key_headlines?.slice(0, 3).map((headline, i) => (
-                    <div key={i} className="headline">{headline}</div>
-                  ))}
-                </div>
+                {/* Historical Price Chart */}
+                <PriceChart symbol={analysisResult.symbol} currentPrice={analysisResult.current_price} />
 
-                {/* Investment Thesis */}
-                {analysisResult.investment_thesis?.length > 0 && (
-                  <div className="section-card">
-                    <h3>💡 Investment Thesis</h3>
-                    {analysisResult.investment_thesis.map((point, i) => (
-                      <div key={i} className="thesis-point">
-                        <span className="number">{i + 1}</span>
-                        <span className="text">{point}</span>
+                {/* AI Forecast */}
+                {analysisResult.forecast_analysis && (
+                  <div className="section-card glass-card stagger-4 animate-fade-in">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <h3>🤖 AI Price Forecast ({analysisResult.forecast_analysis.days_forecasted} Days)</h3>
+                      <div className={`trend-badge ${analysisResult.forecast_analysis.bullish_trend ? 'bullish' : 'bearish'}`}
+                           style={{
+                             padding: '4px 8px', borderRadius: '4px', fontSize: '0.85rem', fontWeight: 'bold',
+                             backgroundColor: analysisResult.forecast_analysis.bullish_trend ? '#2e7d32' : '#c62828',
+                             color: 'white'
+                           }}>
+                        {analysisResult.forecast_analysis.bullish_trend ? 'Bullish Trend' : 'Bearish Trend'}
                       </div>
-                    ))}
+                    </div>
+                    <p style={{ fontSize: '0.9rem', color: '#bbb', marginBottom: '1rem' }}>
+                      Predicted Move: {analysisResult.forecast_analysis.trend_pct > 0 ? '+' : ''}{analysisResult.forecast_analysis.trend_pct}% • Model: {analysisResult.forecast_analysis.model}
+                    </p>
+                    <ForecastChart 
+                      forecastData={analysisResult.forecast_analysis.forecast} 
+                      currentPrice={analysisResult.current_price} 
+                    />
                   </div>
                 )}
 
                 {/* Disclaimer */}
                 <div className="disclaimer">
-                  {analysisResult.disclaimer}
+                  <p>⚠️ <strong>Real-time Analysis vs Dashboard:</strong> Search results are generated in real-time. Dashboard picks are generated before market open and may differ due to intraday price movements.</p>
+                  SEBI Disclaimer: This is an AI-generated research tool for educational purposes only. It does not constitute financial advice.
                 </div>
               </div>
             )}

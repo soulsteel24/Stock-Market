@@ -137,28 +137,41 @@ class PredictionValidator:
         successful = sum(1 for r in completed if r.outcome == OutcomeType.TARGET_HIT)
         accuracy = (successful / total) * 100 if total > 0 else 0
         
-        # Create performance record
+        # Optimize weights based on performance
+        from app.services.weight_optimizer import weight_optimizer
+        from app.services.confidence_scorer import confidence_scorer
+        
+        new_weights = weight_optimizer.optimize_weights(db)
+        
+        # Update live scorer
+        confidence_scorer.update_weights(
+            technical=new_weights["technical"],
+            financial=new_weights["financial"],
+            sentiment=new_weights["sentiment"]
+        )
+        
+        # Create performance record with NEW weights
         perf = ModelPerformance(
             total_predictions=total,
             successful_predictions=successful,
             accuracy_pct=accuracy,
-            technical_weight=settings.technical_weight,
-            financial_weight=settings.financial_weight,
-            sentiment_weight=settings.sentiment_weight,
-            notes="Auto-generated daily report"
+            technical_weight=new_weights["technical"],
+            financial_weight=new_weights["financial"],
+            sentiment_weight=new_weights["sentiment"],
+            notes=f"Auto-tuned weights based on {accuracy:.1f}% accuracy"
         )
         
         db.add(perf)
         db.commit()
         logger.info(f"Recorded daily performance: {accuracy:.1f}% accuracy")
+        logger.info(f"Updated System Weights: {new_weights}")
         
         # Log to text file
         try:
             log_entry = (
                 f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
                 f"Accuracy: {accuracy:.1f}% | "
-                f"Total: {total} | "
-                f"Success: {successful}\n"
+                f"Weights: T={new_weights['technical']}, S={new_weights['sentiment']}, F={new_weights['financial']}\n"
             )
             
             with open("daily_performance_log.txt", "a") as f:

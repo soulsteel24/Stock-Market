@@ -1,6 +1,6 @@
 """Pydantic schemas for API request/response validation."""
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -64,16 +64,41 @@ class FinancialMetrics(BaseModel):
     pe_ratio: Optional[float] = None
     debt_to_equity: Optional[float] = None
     positive_cash_flow: Optional[bool] = None
+    promoter_holding_pct: Optional[float] = None
+    fii_holding_pct: Optional[float] = None
+    dii_holding_pct: Optional[float] = None
+
+
+class ForecastDataPoint(BaseModel):
+    """Single point in a price forecast/history."""
+    date: str
+    predicted_price: Optional[float] = None
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
+    historical_price: Optional[float] = None
+    sma_20: Optional[float] = None
+    sma_50: Optional[float] = None
+
+
+class ForecastAnalysis(BaseModel):
+    """Forecast analysis result."""
+    forecast: List[ForecastDataPoint]
+    trend_pct: float
+    bullish_trend: bool = False
+    model: str
+    days_forecasted: int
 
 
 class SentimentAnalysis(BaseModel):
     """News sentiment analysis result."""
     overall_sentiment: SentimentType
     confidence: float = Field(..., ge=0, le=100)
+    normalized_score: float = Field(default=0.0, ge=-1.0, le=1.0)
     positive_count: int = 0
     neutral_count: int = 0
     negative_count: int = 0
     key_headlines: List[str] = []
+    ml_breakdown: Optional[Dict[str, float]] = None  # Added for FinBERT
 
 
 class ConfidenceBreakdown(BaseModel):
@@ -90,6 +115,13 @@ class Warning(BaseModel):
     type: str  # e.g., "DIVERGENCE", "SAFETY_VETO", "LOW_LIQUIDITY"
     message: str
     severity: str = "WARNING"  # WARNING, CRITICAL
+
+
+class AgentDebate(BaseModel):
+    """Exposes the internal reasoning of the agents in plain English."""
+    momentum_agent: str
+    contrarian_agent: str
+    safety_veto_agent: str
 
 
 class StockAnalysisResponse(BaseModel):
@@ -117,6 +149,10 @@ class StockAnalysisResponse(BaseModel):
     technical_indicators: TechnicalIndicators
     financial_metrics: Optional[FinancialMetrics] = None
     sentiment_analysis: Optional[SentimentAnalysis] = None
+    forecast_analysis: Optional[ForecastAnalysis] = None  # New field
+    
+    # Explainability
+    agent_debate: Optional[AgentDebate] = None
     
     # Investment Thesis
     investment_thesis: List[str] = Field(..., min_length=3, max_length=3)

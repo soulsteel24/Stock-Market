@@ -23,16 +23,23 @@ class FundamentalAnalyzer:
     async def get_fundamentals(self, symbol: str) -> Dict[str, Any]:
         """Get fundamental data for a stock from NSE/yfinance."""
         try:
-            # Try nsepython first
-            fundamentals = await self._get_nse_fundamentals(symbol)
-            if fundamentals and fundamentals.get("pe_ratio"):
-                fundamentals["data_source"] = "nsepython"
+            # Try yfinance first for richer fundamental data
+            fundamentals = await self._get_yfinance_fundamentals(symbol)
+            if fundamentals and (fundamentals.get("pe_ratio") or fundamentals.get("roe") or fundamentals.get("profit_margins")):
+                fundamentals["data_source"] = "yfinance"
                 return fundamentals
             
-            # Fallback to yfinance
-            fundamentals = await self._get_yfinance_fundamentals(symbol)
+            # Fallback to nsepython
+            fundamentals = await self._get_nse_fundamentals(symbol)
             if fundamentals:
-                fundamentals["data_source"] = "yfinance"
+                fundamentals["data_source"] = "nsepython"
+                
+            if fundamentals and not "error" in fundamentals:
+                # Add shareholding data if available
+                from app.services.shareholding_scraper import shareholding_scraper
+                shareholding = await shareholding_scraper.get_shareholding(symbol)
+                if shareholding:
+                    fundamentals.update(shareholding)
                 return fundamentals
             
             return {"error": "Could not fetch fundamental data"}
@@ -112,7 +119,15 @@ class FundamentalAnalyzer:
                 "peg_ratio": self._safe_float(info.get("pegRatio")),
                 "enterprise_value_cr": round(info.get("enterpriseValue", 0) / 10000000, 2),
                 "ev_to_ebitda": self._safe_float(info.get("enterpriseToEbitda")),
+                "ebitda": self._safe_float(info.get("ebitda")),
+                "ebitda_margins": self._safe_float(info.get("ebitdaMargins")) * 100 if info.get("ebitdaMargins") else None,
+                "profit_margins": self._safe_float(info.get("profitMargins")) * 100 if info.get("profitMargins") else None,
+                "gross_margins": self._safe_float(info.get("grossMargins")) * 100 if info.get("grossMargins") else None,
+                "operating_margins": self._safe_float(info.get("operatingMargins")) * 100 if info.get("operatingMargins") else None,
+                "held_percent_insiders": self._safe_float(info.get("heldPercentInsiders")) * 100 if info.get("heldPercentInsiders") else None,
+                "held_percent_institutions": self._safe_float(info.get("heldPercentInstitutions")) * 100 if info.get("heldPercentInstitutions") else None,
                 "book_value": self._safe_float(info.get("bookValue")),
+                "price_to_book": self._safe_float(info.get("priceToBook")),
                 "eps_ttm": self._safe_float(info.get("trailingEps")),
                 "eps_forward": self._safe_float(info.get("forwardEps")),
                 "dividend_yield": self._safe_float(info.get("dividendYield")) * 100 if info.get("dividendYield") else 0,
@@ -120,9 +135,6 @@ class FundamentalAnalyzer:
                 "payout_ratio": self._safe_float(info.get("payoutRatio")) * 100 if info.get("payoutRatio") else None,
                 "roe": self._safe_float(info.get("returnOnEquity")) * 100 if info.get("returnOnEquity") else None,
                 "roa": self._safe_float(info.get("returnOnAssets")) * 100 if info.get("returnOnAssets") else None,
-                "profit_margin": self._safe_float(info.get("profitMargins")) * 100 if info.get("profitMargins") else None,
-                "operating_margin": self._safe_float(info.get("operatingMargins")) * 100 if info.get("operatingMargins") else None,
-                "gross_margin": self._safe_float(info.get("grossMargins")) * 100 if info.get("grossMargins") else None,
                 "debt_to_equity": self._safe_float(info.get("debtToEquity")) / 100 if info.get("debtToEquity") else None,
                 "current_ratio": self._safe_float(info.get("currentRatio")),
                 "quick_ratio": self._safe_float(info.get("quickRatio")),
@@ -130,6 +142,8 @@ class FundamentalAnalyzer:
                 "earnings_growth": self._safe_float(info.get("earningsGrowth")) * 100 if info.get("earningsGrowth") else None,
                 "free_cash_flow_cr": round(info.get("freeCashflow", 0) / 10000000, 2) if info.get("freeCashflow") else None,
                 "operating_cash_flow_cr": round(info.get("operatingCashflow", 0) / 10000000, 2) if info.get("operatingCashflow") else None,
+                "total_revenue_cr": round(info.get("totalRevenue", 0) / 10000000, 2) if info.get("totalRevenue") else None,
+                "net_income_to_common_cr": round(info.get("netIncomeToCommon", 0) / 10000000, 2) if info.get("netIncomeToCommon") else None,
                 "total_debt_cr": round(info.get("totalDebt", 0) / 10000000, 2) if info.get("totalDebt") else None,
                 "total_cash_cr": round(info.get("totalCash", 0) / 10000000, 2) if info.get("totalCash") else None,
                 "week_52_high": self._safe_float(info.get("fiftyTwoWeekHigh")),
@@ -249,6 +263,24 @@ class FundamentalAnalyzer:
         elif fcf and fcf < 0:
             score -= 5
             warnings.append(f"Negative free cash flow")
+        
+        # Shareholding Analysis
+        promoter_pct = data.get("promoter_holding_pct")
+        if promoter_pct:
+            if promoter_pct > 50:
+                score += 5
+                positives.append(f"High promoter holding at {promoter_pct:.1f}%")
+            elif promoter_pct < 25:
+                score -= 5
+                warnings.append(f"Low promoter holding at {promoter_pct:.1f}%")
+        
+        fii_pct = data.get("fii_holding_pct")
+        dii_pct = data.get("dii_holding_pct")
+        if fii_pct and dii_pct:
+            inst_holding = fii_pct + dii_pct
+            if inst_holding > 30:
+                score += 5
+                positives.append(f"Strong institutional backing ({inst_holding:.1f}%)")
         
         # Determine rating
         score = max(0, min(100, score))

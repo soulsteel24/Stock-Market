@@ -53,6 +53,112 @@ class PreMarketAnalyzer:
         
         return None
     
+    async def generate_safe_picks(self, max_stocks: int = 500) -> Dict[str, Any]:
+        """
+        Generate top picks with full AI validation.
+        
+        1. quick bulk scan to find candidates
+        2. full deep analysis on top candidates to verify
+        """
+        from app.services.technical_analyzer import technical_analyzer
+        from app.services.stock_analyzer import stock_analyzer
+        from app.data.stock_universe import ALL_STOCKS
+            
+        stocks = ALL_STOCKS[:max_stocks]
+        
+        # 1. Bulk Scan (Fast)
+        logger.info(f"Starting bulk scan for {len(stocks)} stocks...")
+        results_map = await technical_analyzer.scan_batched(stocks)
+        
+        # Initial sorting buckets
+        candidate_buys = []
+        candidate_sells = []
+        
+        for symbol, data in results_map.items():
+            tech_score = data.get("technical_score", 50)
+            rsi = data.get("rsi")
+            price_above_ema = data.get("price_above_ema", False)
+            
+            # Heuristic Scoring (Initial Filter)
+            if rsi and rsi < 35 and tech_score > 60:
+                score = min(85, 50 + (35 - rsi) + tech_score / 5)
+                candidate_buys.append((symbol, score, data))
+            elif rsi and rsi > 65 and tech_score < 40:
+                score = min(85, 50 + (rsi - 65) + (100 - tech_score) / 5)
+                candidate_sells.append((symbol, score, data))
+            elif price_above_ema and tech_score > 70:
+                score = 55 + tech_score / 10
+                candidate_buys.append((symbol, score, data))
+        
+        # Sort candidates
+        candidate_buys.sort(key=lambda x: x[1], reverse=True)
+        candidate_sells.sort(key=lambda x: x[1], reverse=True)
+        
+        # 2. Validation Step (Deep Analysis)
+        # Verify top 10 of each to find the best 5 valid ones
+        top_buy_candidates = [x[0] for x in candidate_buys[:10]]
+        top_sell_candidates = [x[0] for x in candidate_sells[:10]]
+        
+        unique_candidates = list(set(top_buy_candidates + top_sell_candidates))
+        logger.info(f"Validating {len(unique_candidates)} candidates with full AI model...")
+        
+        if not unique_candidates:
+            return {
+                "buy_recommendations": [],
+                "sell_recommendations": [],
+                "analyzed_count": len(results_map),
+                "failed_count": len(stocks) - len(results_map)
+            }
+
+        # Run full analysis
+        batch_results = await stock_analyzer.analyze_batch(
+            symbols=unique_candidates,
+            include_news=False,  # Skip news for speed during validation
+            include_technicals=True
+        )
+        
+        valid_buys = []
+        valid_sells = []
+        
+        for res in batch_results["results"]:
+            symbol = res.symbol
+            # Find original data for quick access to some fields if needed
+            # (though Full Analysis has better data)
+            
+            if res.recommendation.value == "BUY":
+                valid_buys.append({
+                    "symbol": symbol,
+                    "signal": "BUY",
+                    "confidence": res.confidence_score,
+                    "current_price": res.current_price,
+                    "rsi": res.technical_indicators.rsi,
+                    "change_pct": 0, # Note: Populate if available
+                    "tech_score": res.confidence_breakdown.technical_score,
+                    "data_source": "full_ai_validated"
+                })
+            elif res.recommendation.value == "SELL":
+                valid_sells.append({
+                    "symbol": symbol,
+                    "signal": "SELL",
+                    "confidence": res.confidence_score,
+                    "current_price": res.current_price,
+                    "rsi": res.technical_indicators.rsi,
+                    "change_pct": 0,
+                    "tech_score": res.confidence_breakdown.technical_score,
+                    "data_source": "full_ai_validated"
+                })
+        
+        # Sort final results
+        valid_buys.sort(key=lambda x: x["confidence"], reverse=True)
+        valid_sells.sort(key=lambda x: x["confidence"], reverse=True)
+        
+        return {
+            "buy_recommendations": valid_buys,
+            "sell_recommendations": valid_sells,
+            "analyzed_count": len(results_map),
+            "failed_count": len(stocks) - len(results_map)
+        }
+
     async def run_full_analysis(self, max_stocks: int = 500) -> Dict[str, Any]:
         """
         Run analysis on all stocks. Call this before market opens.
@@ -68,65 +174,10 @@ class PreMarketAnalyzer:
         logger.info(f"Starting pre-market analysis for {max_stocks} stocks at {start_time}")
         
         try:
-            from app.services.technical_analyzer import technical_analyzer
-            from app.data.stock_universe import ALL_STOCKS
-            
-            stocks = ALL_STOCKS[:max_stocks]
-            buy_picks = []
-            sell_picks = []
-            
-            # Use bulk scanning (Much faster)
-            logger.info(f"Starting bulk scan for {len(stocks)} stocks...")
-            results_map = await technical_analyzer.scan_batched(stocks)
-            
-            analyzed = len(results_map)
-            failed = len(stocks) - analyzed
-            
-            for symbol, data in results_map.items():
-                tech_score = data.get("technical_score", 50)
-                rsi = data.get("rsi")
-                price_above_ema = data.get("price_above_ema", False)
-                
-                # Scoring logic
-                if rsi and rsi < 35 and tech_score > 60:
-                    signal = "BUY"
-                    confidence = min(85, 50 + (35 - rsi) + tech_score / 5)
-                elif rsi and rsi > 65 and tech_score < 40:
-                    signal = "SELL"
-                    confidence = min(85, 50 + (rsi - 65) + (100 - tech_score) / 5)
-                elif price_above_ema and tech_score > 70:
-                    signal = "BUY"
-                    confidence = 55 + tech_score / 10
-                elif not price_above_ema and tech_score < 35:
-                    signal = "SELL"
-                    confidence = 55 + (100 - tech_score) / 10
-                else:
-                    signal = "HOLD"
-                    confidence = 50
-                
-                result = {
-                    "symbol": symbol,
-                    "signal": signal,
-                    "confidence": round(confidence, 1),
-                    "current_price": data.get("current_price"),
-                    "rsi": rsi,
-                    "change_pct": data.get("change_pct", 0),
-                    "ema_200": data.get("ema_200"),
-                    "tech_score": tech_score,
-                    "data_source": "yfinance_bulk"
-                }
-
-                if signal == "BUY":
-                    buy_picks.append(result)
-                elif signal == "SELL":
-                    sell_picks.append(result)
-            
-            # Sort by confidence
-            buy_picks.sort(key=lambda x: x["confidence"], reverse=True)
-            sell_picks.sort(key=lambda x: x["confidence"], reverse=True)
+            # Use the new shared generation logic
+            picks = await self.generate_safe_picks(max_stocks)
             
             end_time = datetime.now()
-            # ... rest of code unchanged ...
             duration = (end_time - start_time).total_seconds()
             
             self.cache = {
@@ -134,20 +185,20 @@ class PreMarketAnalyzer:
                 "generated_at": datetime.now().isoformat(),
                 "market_status": "Pre-Market",
                 "analysis_duration_seconds": round(duration, 1),
-                "buy_recommendations": buy_picks[:20],  # Top 20
-                "sell_recommendations": sell_picks[:20],
-                "all_buy_signals": len(buy_picks),
-                "all_sell_signals": len(sell_picks),
-                "total_analyzed": analyzed,
-                "total_attempted": len(stocks),
-                "failed": failed,
+                "buy_recommendations": picks["buy_recommendations"][:20],
+                "sell_recommendations": picks["sell_recommendations"][:20],
+                "all_buy_signals": len(picks["buy_recommendations"]),
+                "all_sell_signals": len(picks["sell_recommendations"]),
+                "total_analyzed": picks["analyzed_count"],
+                "total_attempted": max_stocks,
+                "failed": picks["failed_count"],
                 "disclaimer": "⚠️ Pre-market analysis. Verify with live data before trading."
             }
             
             self.last_analysis_date = self.cache["analysis_date"]
             self._save_cache()
             
-            logger.info(f"Pre-market analysis complete: {analyzed} stocks in {duration:.1f}s")
+            logger.info(f"Pre-market analysis complete in {duration:.1f}s")
             return self.cache
             
         except Exception as e:

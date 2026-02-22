@@ -64,6 +64,12 @@ async def startup_event():
     init_db()
     logger.info(f"Database initialized. API version: {__version__}")
     
+    # Initialize dynamic NSE market universe
+    from app.data.market_universe import get_all_nse_symbols
+    logger.info("Fetching dynamic NSE stock universe...")
+    symbols = get_all_nse_symbols()
+    logger.info(f"Dynamic NSE universe loaded with {len(symbols)} symbols.")
+    
     if not settings.gemini_api_key:
         logger.warning("⚠️ GEMINI_API_KEY not set. AI features will be limited.")
 

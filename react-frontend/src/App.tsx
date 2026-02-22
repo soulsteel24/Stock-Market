@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 import ForecastChart from './components/ForecastChart'
 import PriceChart from './components/PriceChart'
+import NetIncomeChart from './components/NetIncomeChart'
 
 // Types
 interface StockPick {
@@ -516,10 +517,6 @@ function App() {
                       <h3>📊 Deep Fundamentals & Holdings</h3>
                       <div className="indicators-grid four-col">
                            <div className="indicator">
-                               <span className="label">P/E Ratio</span>
-                               <span className="value">{formatNumber(analysisResult.fundamentals.ratios?.pe_ratio || 0)}</span>
-                           </div>
-                           <div className="indicator">
                                <span className="label">EPS Growth</span>
                                <span className="value">{formatNumber(analysisResult.fundamentals.ratios?.earnings_growth || 0)}%</span>
                            </div>
@@ -542,6 +539,28 @@ function App() {
                       </div>
                   </div>
                 )}
+
+                {/* Valuation Metrics & Profitability */}
+                <div className="section-card glass-card stagger-3 animate-fade-in">
+                  <h3>💰 Valuation & Profitability</h3>
+                  <div className="indicators-grid three-col" style={{ marginBottom: '1.5rem' }}>
+                    <div className="indicator">
+                      <span className="label">P/E Ratio (Trailing)</span>
+                      <span className="value">{formatNumber(analysisResult.raw_fundamentals?.trailing_pe || analysisResult.fundamentals?.ratios?.pe_ratio || 0)}</span>
+                    </div>
+                    <div className="indicator">
+                      <span className="label">P/B Ratio</span>
+                      <span className="value">{formatNumber(analysisResult.raw_fundamentals?.price_to_book || analysisResult.raw_fundamentals?.pb_ratio || 0)}</span>
+                    </div>
+                    <div className="indicator">
+                      <span className="label">EPS (TTM)</span>
+                      <span className="value">{formatNumber(analysisResult.raw_fundamentals?.trailing_eps || analysisResult.raw_fundamentals?.eps_ttm || 0)}</span>
+                    </div>
+                  </div>
+                  
+                  <h4>Net Income History (Last 4 Years)</h4>
+                  <NetIncomeChart netIncomeHistory={analysisResult.raw_fundamentals?.net_income_history} />
+                </div>
 
                 {/* Technical Indicators */}
                 <div className="section-card glass-card stagger-3 animate-fade-in">

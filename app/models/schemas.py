@@ -1,6 +1,6 @@
 """Pydantic schemas for API request/response validation."""
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from enum import Enum
 
@@ -67,6 +67,13 @@ class FinancialMetrics(BaseModel):
     promoter_holding_pct: Optional[float] = None
     fii_holding_pct: Optional[float] = None
     dii_holding_pct: Optional[float] = None
+    trailing_pe: Optional[float] = None
+    forward_pe: Optional[float] = None
+    price_to_book: Optional[float] = None
+    trailing_eps: Optional[float] = None
+    profit_margin_pct: Optional[float] = None
+    revenue_growth_pct: Optional[float] = None
+    net_income_history: Optional[Dict[str, float]] = None
 
 
 class ForecastDataPoint(BaseModel):
@@ -153,6 +160,9 @@ class StockAnalysisResponse(BaseModel):
     
     # Explainability
     agent_debate: Optional[AgentDebate] = None
+    
+    # Raw Data for Frontend overrides
+    raw_fundamentals: Optional[Dict[str, Any]] = None
     
     # Investment Thesis
     investment_thesis: List[str] = Field(..., min_length=3, max_length=3)

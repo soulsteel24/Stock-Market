@@ -79,7 +79,12 @@ class SentimentAnalyzer:
                 positive_count=pos_count,
                 neutral_count=neu_count,
                 negative_count=neg_count,
-                key_headlines=titles[:5]
+                key_headlines=titles[:5],
+                ml_breakdown={
+                    "positive": pos_count / max(cnt, 1),
+                    "neutral": neu_count / max(cnt, 1),
+                    "negative": neg_count / max(cnt, 1)
+                }
             )
         except Exception as e:
             logger.warning(f"FinBERT failed, falling back to Gemini: {e}")
@@ -113,7 +118,12 @@ class SentimentAnalyzer:
                 positive_count=positive,
                 neutral_count=neutral,
                 negative_count=negative,
-                key_headlines=titles[:5]
+                key_headlines=titles[:5],
+                ml_breakdown={
+                    "positive": positive / max(len(titles), 1),
+                    "neutral": neutral / max(len(titles), 1),
+                    "negative": negative / max(len(titles), 1)
+                }
             )
         else:
             # Fallback: Basic keyword analysis
@@ -171,7 +181,12 @@ class SentimentAnalyzer:
             positive_count=positive,
             neutral_count=neutral,
             negative_count=negative,
-            key_headlines=titles[:5]
+            key_headlines=titles[:5],
+            ml_breakdown={
+                "positive": positive / max(total, 1),
+                "neutral": neutral / max(total, 1),
+                "negative": negative / max(total, 1)
+            }
         )
     
     def sentiment_to_score(self, sentiment: SentimentAnalysis) -> float:

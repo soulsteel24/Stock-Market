@@ -110,6 +110,35 @@ class SafetyVetoAgent(BaseAgent):
         if d_to_e and d_to_e > 3.0:
             debt_check["passed"] = False
             veto_reasons.append(f"Company overleveraged (D/E: {d_to_e:.2f} > 3.0)")
+            
+        # Check: Negative Net Income trend over last 3 years
+        net_income_history = financial.get("net_income_history", {})
+        income_check = {
+            "name": "Net Income Trend Check",
+            "passed": True,
+            "value": str(net_income_history) if net_income_history else "N/A"
+        }
+        
+        if net_income_history and len(net_income_history) >= 3:
+            # Sort years descending
+            sorted_years = sorted(net_income_history.keys(), reverse=True)
+            recent_3_years = [net_income_history[y] for y in sorted_years[:3]]
+            if all(v < 0 for v in recent_3_years):
+                income_check["passed"] = False
+                veto_reasons.append(f"Negative Net Income over the last 3 years")
+        
+        # Check: Excessively high P/B ratio (e.g., > 10)
+        pb_ratio = financial.get("price_to_book") or stock_info.get("pb_ratio")
+        pb_check = {
+            "name": "P/B Ratio Check",
+            "passed": True,
+            "value": pb_ratio,
+            "threshold": 10.0
+        }
+        
+        if pb_ratio and pb_ratio > 10.0:
+            pb_check["passed"] = False
+            veto_reasons.append(f"Excessively high P/B ratio ({pb_ratio:.2f} > 10.0)")
         
         # Check 5: Large price drop in single day
         price_change_5d = technical.get("price_change_5d", 0)

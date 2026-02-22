@@ -106,29 +106,51 @@ class FundamentalAnalyzer:
             if not info:
                 return None
             
+            # Extract Net Income history
+            net_income_history = {}
+            try:
+                financials = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: ticker.financials
+                )
+                if financials is not None and not financials.empty:
+                    if 'Net Income' in financials.index:
+                        net_income_row = financials.loc['Net Income'].dropna()
+                        # Get last 4 available years
+                        for date, value in net_income_row.head(4).items():
+                            try:
+                                year_str = str(date.year) if hasattr(date, 'year') else str(date)[:4]
+                                net_income_history[year_str] = float(value)
+                            except:
+                                pass
+            except Exception as e:
+                logger.warning(f"Could not fetch financials for {symbol}: {e}")
+                
             return {
                 "symbol": symbol,
                 "company_name": info.get("longName", symbol),
                 "industry": info.get("industry", "Unknown"),
                 "sector": info.get("sector", "Unknown"),
-                "market_cap_cr": round(info.get("marketCap", 0) / 10000000, 2),
+                "market_cap_cr": round(info.get("marketCap", 0) / 10000000, 2) if info.get("marketCap") else None,
                 "pe_ratio": self._safe_float(info.get("trailingPE")),
+                "trailing_pe": self._safe_float(info.get("trailingPE")),
                 "forward_pe": self._safe_float(info.get("forwardPE")),
                 "pb_ratio": self._safe_float(info.get("priceToBook")),
+                "price_to_book": self._safe_float(info.get("priceToBook")),
                 "ps_ratio": self._safe_float(info.get("priceToSalesTrailing12Months")),
                 "peg_ratio": self._safe_float(info.get("pegRatio")),
-                "enterprise_value_cr": round(info.get("enterpriseValue", 0) / 10000000, 2),
+                "enterprise_value_cr": round(info.get("enterpriseValue", 0) / 10000000, 2) if info.get("enterpriseValue") else None,
                 "ev_to_ebitda": self._safe_float(info.get("enterpriseToEbitda")),
                 "ebitda": self._safe_float(info.get("ebitda")),
                 "ebitda_margins": self._safe_float(info.get("ebitdaMargins")) * 100 if info.get("ebitdaMargins") else None,
                 "profit_margins": self._safe_float(info.get("profitMargins")) * 100 if info.get("profitMargins") else None,
+                "profit_margin_pct": self._safe_float(info.get("profitMargins")) * 100 if info.get("profitMargins") else None,
                 "gross_margins": self._safe_float(info.get("grossMargins")) * 100 if info.get("grossMargins") else None,
                 "operating_margins": self._safe_float(info.get("operatingMargins")) * 100 if info.get("operatingMargins") else None,
                 "held_percent_insiders": self._safe_float(info.get("heldPercentInsiders")) * 100 if info.get("heldPercentInsiders") else None,
                 "held_percent_institutions": self._safe_float(info.get("heldPercentInstitutions")) * 100 if info.get("heldPercentInstitutions") else None,
                 "book_value": self._safe_float(info.get("bookValue")),
-                "price_to_book": self._safe_float(info.get("priceToBook")),
                 "eps_ttm": self._safe_float(info.get("trailingEps")),
+                "trailing_eps": self._safe_float(info.get("trailingEps")),
                 "eps_forward": self._safe_float(info.get("forwardEps")),
                 "dividend_yield": self._safe_float(info.get("dividendYield")) * 100 if info.get("dividendYield") else 0,
                 "dividend_rate": self._safe_float(info.get("dividendRate")),
@@ -139,7 +161,9 @@ class FundamentalAnalyzer:
                 "current_ratio": self._safe_float(info.get("currentRatio")),
                 "quick_ratio": self._safe_float(info.get("quickRatio")),
                 "revenue_growth": self._safe_float(info.get("revenueGrowth")) * 100 if info.get("revenueGrowth") else None,
+                "revenue_growth_pct": self._safe_float(info.get("revenueGrowth")) * 100 if info.get("revenueGrowth") else None,
                 "earnings_growth": self._safe_float(info.get("earningsGrowth")) * 100 if info.get("earningsGrowth") else None,
+                "net_income_history": net_income_history if net_income_history else None,
                 "free_cash_flow_cr": round(info.get("freeCashflow", 0) / 10000000, 2) if info.get("freeCashflow") else None,
                 "operating_cash_flow_cr": round(info.get("operatingCashflow", 0) / 10000000, 2) if info.get("operatingCashflow") else None,
                 "total_revenue_cr": round(info.get("totalRevenue", 0) / 10000000, 2) if info.get("totalRevenue") else None,
@@ -405,7 +429,8 @@ class FundamentalAnalyzer:
             "combined_score": round(combined_score, 1),
             "recommendation": recommendation,
             "data_source": fundamentals.get("data_source", "unknown"),
-            "analyzed_at": datetime.now().isoformat()
+            "analyzed_at": datetime.now().isoformat(),
+            "raw_data": fundamentals
         }
     
     def _safe_float(self, value) -> Optional[float]:

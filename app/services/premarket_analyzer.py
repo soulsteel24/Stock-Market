@@ -62,9 +62,9 @@ class PreMarketAnalyzer:
         """
         from app.services.technical_analyzer import technical_analyzer
         from app.services.stock_analyzer import stock_analyzer
-        from app.data.stock_universe import ALL_STOCKS
+        from app.data.market_universe import get_all_nse_symbols
             
-        stocks = ALL_STOCKS[:max_stocks]
+        stocks = get_all_nse_symbols()[:max_stocks]
         
         # 1. Bulk Scan (Fast)
         logger.info(f"Starting bulk scan for {len(stocks)} stocks...")

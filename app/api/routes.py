@@ -354,7 +354,7 @@ async def get_comprehensive_stock_details(symbol: str):
         },
         "forecast_analysis": forecast_data,
         "agent_debate": agent_debate,
-        "raw_fundamentals": fundamental # Send full fundamental object for frontend parsing
+        "raw_fundamentals": fundamental.get("raw_data", fundamental) # Send full fundamental object for frontend parsing
     }
 
 
@@ -525,9 +525,12 @@ async def get_top_picks(
 async def get_stock_list(sector: Optional[str] = None):
     """Get list of available stocks for analysis."""
     from app.data.stock_universe import (
-        ALL_STOCKS, NIFTY_50, NIFTY_NEXT_50, NIFTY_MIDCAP_100,
+        NIFTY_50, NIFTY_NEXT_50, NIFTY_MIDCAP_100,
         SECTOR_STOCKS, get_stocks_by_sector
     )
+    from app.data.market_universe import get_all_nse_symbols
+    
+    all_stocks = get_all_nse_symbols()
     
     if sector:
         stocks = get_stocks_by_sector(sector)
@@ -541,7 +544,7 @@ async def get_stock_list(sector: Optional[str] = None):
         "nifty_50": NIFTY_50,
         "nifty_next_50": NIFTY_NEXT_50[:20],  # Sample
         "sectors": list(SECTOR_STOCKS.keys()),
-        "total_stocks": len(ALL_STOCKS),
+        "total_stocks": len(all_stocks),
         "note": "Use ?sector=banking|it|pharma|auto|fmcg|metal|energy|realty for sector-specific lists"
     }
 
@@ -816,9 +819,17 @@ async def get_historical_data(symbol: str, period: str = "1y"):
     if period not in valid_periods:
         period = "1y"
         
+    yf_period_map = {
+        "1w": "5d",
+        "1m": "1mo",
+        "3m": "3mo",
+        "6m": "6mo"
+    }
+    yf_period = yf_period_map.get(period, period)
+        
     try:
         ticker = yf.Ticker(yf_symbol)
-        df = ticker.history(period=period)
+        df = ticker.history(period=yf_period)
         
         if df.empty:
             # Fallback to nsepython

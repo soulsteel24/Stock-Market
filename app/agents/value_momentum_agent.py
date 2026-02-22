@@ -52,16 +52,25 @@ class ValueMomentumAgent(BaseAgent):
                 "threshold": f">= {self.min_eps_growth}%"
             }
         
-        # 2. P/E Ratio < Sector average (we use 25 as general threshold)
+        # 2. P/E Ratio < Sector average or historically low (we use 25 as general threshold)
         pe_ratio = stock_info.get("pe_ratio")
+        trailing_pe = financial.get("trailing_pe")
+        revenue_growth = financial.get("revenue_growth_pct")
+        
+        pe_to_use = trailing_pe if trailing_pe else pe_ratio
         sector_pe = 25  # Default sector average
-        if pe_ratio is not None:
+        
+        if pe_to_use is not None:
+            # Look for stocks where P/E is historically low compared to sector, but revenue growth is positive
+            pe_passed = pe_to_use < sector_pe
+            rev_passed = revenue_growth > 0 if revenue_growth is not None else True
+            
             criteria["pe_ratio"] = {
-                "passed": pe_ratio < sector_pe,
-                "value": pe_ratio,
-                "threshold": f"< {sector_pe} (sector avg)"
+                "passed": pe_passed and rev_passed,
+                "value": pe_to_use,
+                "threshold": f"< {sector_pe} (sector avg) & Rev Growth > 0"
             }
-            if pe_ratio < sector_pe:
+            if pe_passed and rev_passed:
                 passed_count += 1
         else:
             criteria["pe_ratio"] = {

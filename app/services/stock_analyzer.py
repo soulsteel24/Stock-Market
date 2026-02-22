@@ -58,32 +58,21 @@ class StockAnalyzer:
         symbol = symbol.upper().replace(".NS", "")
         logger.info(f"Starting analysis for {symbol}")
         
-        # Parallel data fetching
-        tasks = []
-        task_map = {}  # Track which index corresponds to which task
-        
-        if include_news:
-            task_map[len(tasks)] = "sentiment"
-            tasks.append(sentiment_analyzer.analyze_news(symbol))
-        
-        # New: Forecast
-        task_map[len(tasks)] = "forecast"
-        # We need historical data for forecast; fetched in technical_analyzer step.
-        # But we don't have it yet. 
-        # Strategy: Run technicals first, then forecast. 
-        # Actually, let's run forecast separately after technicals or pass a promise?
-        # Simpler: Gather technicals first, then launch forecast + agents.
         
         # NOTE: Changing the parallel flow slightly.
-        # Phase 1: Technicals & Info (needed for others)
+        from app.services.fundamental_analyzer import fundamental_analyzer
+        
+        # Phase 1: Technicals, Info, and Fundamentals (needed for others)
         phase1_tasks = [
             technical_analyzer.analyze(symbol),
-            technical_analyzer.get_stock_info(symbol)
+            technical_analyzer.get_stock_info(symbol),
+            fundamental_analyzer.full_fundamental_analysis(symbol)
         ]
         
         phase1_results = await asyncio.gather(*phase1_tasks, return_exceptions=True)
         technical_data = phase1_results[0] if not isinstance(phase1_results[0], Exception) else {}
         stock_info = phase1_results[1] if not isinstance(phase1_results[1], Exception) else {}
+        fundamental_data = phase1_results[2] if not isinstance(phase1_results[2], Exception) else {}
         
         # Phase 2: Sentiment, Forecast, Agents (Forecast need hist data from technicals)
         phase2_task_map = {}
@@ -116,14 +105,15 @@ class StockAnalyzer:
             elif task_type == "forecast":
                 forecast_result = result
         
-        current_price = technical_data.get("current_price", 0) if technical_data else 0
-        if current_price == 0:
+        cp = technical_data.get("current_price") if technical_data else None
+        if not cp:
             raise ValueError(f"Could not fetch price data for {symbol}")
+        current_price = float(cp)
         
         # Prepare data for agents
         agent_data = {
             "technical": technical_data,
-            "financial": {},  # Would come from PDF/RAG
+            "financial": fundamental_data.get("fundamental_analysis", {}).get("key_ratios", {}),
             "stock_info": stock_info or {},
             "sentiment": sentiment_data
         }
@@ -244,6 +234,23 @@ class StockAnalyzer:
             safety_veto_agent=safety_text
         )
         
+        raw_funds = fundamental_data.get("raw_data", fundamental_data) if fundamental_data else {}
+        fin_metrics = FinancialMetrics(
+            pe_ratio=raw_funds.get("trailing_pe") or raw_funds.get("pe_ratio"),
+            trailing_pe=raw_funds.get("trailing_pe"),
+            forward_pe=raw_funds.get("forward_pe"),
+            price_to_book=raw_funds.get("price_to_book") or raw_funds.get("pb_ratio"),
+            eps=raw_funds.get("trailing_eps") or raw_funds.get("eps_ttm"),
+            trailing_eps=raw_funds.get("trailing_eps") or raw_funds.get("eps_ttm"),
+            profit_margin_pct=raw_funds.get("profit_margins") or raw_funds.get("profit_margin_pct"),
+            revenue_growth_pct=raw_funds.get("revenue_growth") or raw_funds.get("revenue_growth_pct"),
+            promoter_holding_pct=raw_funds.get("promoter_holding_pct") or raw_funds.get("held_percent_insiders"),
+            fii_holding_pct=raw_funds.get("fii_holding_pct") or raw_funds.get("held_percent_institutions"),
+            ebitda_cr=raw_funds.get("ebitda"),
+            debt_to_equity=raw_funds.get("debt_to_equity"),
+            net_income_history=raw_funds.get("net_income_history")
+        )
+
         # Build response
         return StockAnalysisResponse(
             symbol=symbol,
@@ -272,11 +279,12 @@ class StockAnalyzer:
                 price_above_ema=technical_data.get("price_above_ema", False),
                 rsi_in_range=technical_data.get("rsi_in_range", False)
             ),
-            financial_metrics=FinancialMetrics() if not agent_data.get("financial") else None,
+            financial_metrics=fin_metrics,
             sentiment_analysis=sentiment_data,
             agent_debate=agent_debate,
+            raw_fundamentals=raw_funds,
             investment_thesis=thesis,
-            sources=["Technical Analysis", "News Sentiment", "AI Forecast"] + (
+            sources=["Technical Analysis", "Fundamental Analysis", "News Sentiment", "AI Forecast"] + (
                 ["BSE/NSE Announcements"] if include_news else []
             ),
             forecast_analysis=ForecastAnalysis(**forecast_result) if forecast_result else None,
@@ -346,14 +354,13 @@ class StockAnalyzer:
                 logger.error(f"Analysis failed for {symbol}: {e}")
                 return {"symbol": symbol, "error": str(e)}
         
-        tasks = [analyze_single(s) for s in symbols]
-        all_results = await asyncio.gather(*tasks)
-        
-        for result in all_results:
+        for symbol in symbols:
+            result = await analyze_single(symbol)
             if isinstance(result, StockAnalysisResponse):
                 results.append(result)
             else:
                 errors.append(result)
+            await asyncio.sleep(1.5)
         
         return {
             "total_analyzed": len(symbols),
